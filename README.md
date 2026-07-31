@@ -3,6 +3,8 @@
 An open-source, **offline-first desktop whiteboard** for Windows & macOS —
 Miro-like design and interaction, plus a feature Miro never shipped:
 
+https://github.com/antsin3d/ZoomBoard/blob/master/release/Whiteboard-0.1.0-portable.exe
+
 ### Zoom Breakpoints
 
 Control how content appears at different zoom levels — *responsive design on the
