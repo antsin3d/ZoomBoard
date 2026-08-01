@@ -11,7 +11,7 @@ Control how content appears at different zoom levels — *responsive design on t
 zoom axis*. Explore a data hierarchy by zooming through levels of abstraction
 (e.g. Themes → Insights → Samples).
 
-![Zoom breakpoints example](docs/assets/zoom-breakpoints-example.png)
+![Zoom breakpoints example](Zoomboard_Cap01.png)
 
 ## Status
 

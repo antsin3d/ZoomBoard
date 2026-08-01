@@ -1,8 +1,6 @@
 # Whiteboard — Project Plan
 
-An offline-first desktop whiteboard app for **Windows + macOS** that mimics
-[miro.com](https://miro.com)'s design, interaction model, and core functionality —
-with one headline feature Miro never shipped:
+An offline-first desktop whiteboard app for **Windows + macOS** with one key unique differentiator:
 
 > **Zoom Breakpoints** — control how content appears at different zoom levels,
 > so you can explore a data hierarchy by zooming through levels of abstraction.
@@ -121,7 +119,7 @@ type Node = {
   (visibility, style, variant) + editor panel; polished transitions.
 - **Phase 3 — Hierarchy-bound zoom.** Bind a parent→child tree to zoom depth;
   auto-generate tiers from hierarchy (the univrs.ai drill-down demo).
-- **Phase 4 — Miro parity polish.** Frames, templates, alignment/snapping,
+- **Phase 4** Frames, templates, alignment/snapping,
   keyboard shortcuts, export (PNG/PDF), packaging + signing for Win + macOS.
 - **Phase 5 (optional).** Offline-first multiplayer over local network; plugin API.
 
