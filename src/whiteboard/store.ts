@@ -18,9 +18,12 @@ import {
 import { resolveTier, rawTier, type TierId } from "./tiers";
 import { initializeBoardDocument, syncBoardDocument } from "./document";
 import {
+  anchorPoint,
   canMoveLayers,
   computeArrangeDeltas,
+  connectorWorldEndpoints,
   effectiveSelectionRoots,
+  findAttachTargetAt,
   isContainer,
   presentationKeys,
   rebaseForParent,
@@ -28,6 +31,7 @@ import {
   stateForPresentation,
   worldBasePosition,
   worldBounds,
+  worldBoundsAtZoom,
   worldPositionForPresentation,
   type ArrangeMode,
   type Bounds,
@@ -253,6 +257,29 @@ export interface BoardStore {
   ) => void;
   alignSelected: (mode: ArrangeMode) => void;
   connectSelected: () => string | null;
+  attachConnectorEnd: (
+    connectorId: string,
+    end: "start" | "end",
+    targetId: string | null,
+    anchor?: import("./model").ConnectorAnchor | null,
+  ) => void;
+  moveConnectorEndpointTo: (
+    connectorId: string,
+    end: "start" | "end",
+    world: { x: number; y: number },
+  ) => void;
+  moveConnectorFloatingBy: (connectorId: string, dx: number, dy: number) => void;
+  setConnectorLabelPosition: (
+    connectorId: string,
+    position: number,
+    offsetX?: number,
+    offsetY?: number,
+  ) => void;
+  createConnector: (
+    start: { elementId?: string; anchor?: import("./model").ConnectorAnchor; world: { x: number; y: number } },
+    end: { elementId?: string; anchor?: import("./model").ConnectorAnchor; world: { x: number; y: number } },
+  ) => string;
+  flipConnector: (connectorId: string) => void;
 
   // ── Actions: breakpoints ──
   addBreakpoint: (zoom: number, name?: string) => string;
@@ -749,6 +776,19 @@ export const useBoardStore = create<BoardStore>()(
         const endpoints = effectiveSelectionRoots(board, selectedIds).filter(
           (element) => element.type !== "connector",
         );
+        if (endpoints.length === 1) {
+          const source = endpoints[0];
+          const bounds = worldBoundsAtZoom(board, source, zoom);
+          const cx = bounds.x + bounds.width / 2;
+          const cy = bounds.y + bounds.height / 2;
+          const toward = { x: cx + 120, y: cy };
+          const startWorld = anchorPoint(bounds, { side: "auto", offset: 0.5 }, toward, source.type);
+          const endWorld = { x: startWorld.x + 120, y: startWorld.y };
+          return get().createConnector(
+            { elementId: source.id, world: startWorld, anchor: { side: "auto", offset: 0.5 } },
+            { world: endWorld },
+          );
+        }
         if (endpoints.length !== 2) return null;
 
         const connectorId = newId();
@@ -764,10 +804,11 @@ export const useBoardStore = create<BoardStore>()(
             y: 0,
             width: 1,
             height: 1,
-            fill: "transparent",
+            fill: "#ffffff",
             stroke: "#64748b",
             strokeWidth: 2,
             content: "",
+            connectorEndType: "arrow",
           },
           keyframes: {},
         };
@@ -791,6 +832,295 @@ export const useBoardStore = create<BoardStore>()(
           selectedIds: [connectorId],
         }));
         return connectorId;
+      },
+
+      attachConnectorEnd: (connectorId, end, targetId, anchor = null) => {
+        const { board, zoom, activeBreakpointId } = get();
+        const kfId = activeBreakpointId ?? BASE_KEYFRAME_ID;
+        // Preserve the current world endpoint when detaching so the floating
+        // end stays where the shape edge was.
+        const connector = board.elements.find((el) => el.id === connectorId);
+        const currentWorld = connector ? connectorWorldEndpoints(board, connector, zoom) : null;
+        saveHistory();
+        set((s) => ({
+          board: {
+            ...s.board,
+            elements: s.board.elements.map((el) => {
+              if (el.id !== connectorId || el.type !== "connector") return el;
+              const next = { ...el };
+              if (end === "start") {
+                if (targetId) next.connectorStartId = targetId;
+                else delete next.connectorStartId;
+                if (anchor) next.connectorStartAnchor = anchor;
+                else delete next.connectorStartAnchor;
+              } else {
+                if (targetId) next.connectorEndId = targetId;
+                else delete next.connectorEndId;
+                if (anchor) next.connectorEndAnchor = anchor;
+                else delete next.connectorEndAnchor;
+              }
+              // Detaching: bake the current world endpoint into the stored
+              // fallback frame so it doesn't jump.
+              if (!targetId && currentWorld) {
+                const parent = el.parentId
+                  ? s.board.elements.find((c) => c.id === el.parentId)
+                  : undefined;
+                const parentWorld = parent
+                  ? worldPositionForPresentation(s.board, parent, kfId)
+                  : { x: 0, y: 0 };
+                const keep = end === "start" ? currentWorld.start : currentWorld.end;
+                const other = end === "start" ? currentWorld.end : currentWorld.start;
+                const ox = other.x - parentWorld.x;
+                const oy = other.y - parentWorld.y;
+                const nx = keep.x - parentWorld.x;
+                const ny = keep.y - parentWorld.y;
+                return {
+                  ...next,
+                  keyframes: {
+                    ...next.keyframes,
+                    [kfId]: {
+                      ...(next.keyframes[kfId] ?? {}),
+                      x: ox,
+                      y: oy,
+                      width: Math.max(1, Math.abs(nx - ox)),
+                      height: Math.max(1, Math.abs(ny - oy)),
+                      connectorPoints: end === "start" ? [nx - ox, ny - oy, 0, 0] : [0, 0, nx - ox, ny - oy],
+                    },
+                  },
+                };
+              }
+              return next;
+            }),
+          },
+        }));
+      },
+
+      moveConnectorEndpointTo: (connectorId, end, world) => {
+        const { board, zoom, activeBreakpointId } = get();
+        const connector = board.elements.find((el) => el.id === connectorId);
+        if (!connector || connector.type !== "connector") return;
+        const kfId = activeBreakpointId ?? BASE_KEYFRAME_ID;
+        const target = findAttachTargetAt(board, world, zoom, [connectorId]);
+        saveHistory();
+        set((s) => ({
+          board: {
+            ...s.board,
+            elements: s.board.elements.map((el) => {
+              if (el.id !== connectorId || el.type !== "connector") return el;
+              // Dropped onto a shape → attach with the nearest edge anchor.
+              if (target) {
+                const next = { ...el };
+                if (end === "start") {
+                  next.connectorStartId = target.element.id;
+                  next.connectorStartAnchor = target.anchor;
+                } else {
+                  next.connectorEndId = target.element.id;
+                  next.connectorEndAnchor = target.anchor;
+                }
+                return next;
+              }
+              // Dropped into empty space → floating end. Rewrite the stored
+              // fallback points so this world position survives re-resolution.
+              const parent = el.parentId
+                ? s.board.elements.find((c) => c.id === el.parentId)
+                : undefined;
+              const parentWorld = parent
+                ? worldPositionForPresentation(s.board, parent, kfId)
+                : { x: 0, y: 0 };
+              const current = stateForPresentation(s.board, el, kfId);
+              const pts = [...(current.connectorPoints ?? [0, 0, current.width, current.height])];
+              while (pts.length < 4) pts.push(0);
+              const otherWorld = end === "start"
+                ? { x: parentWorld.x + current.x + (pts[2] ?? 0), y: parentWorld.y + current.y + (pts[3] ?? 0) }
+                : { x: parentWorld.x + current.x + (pts[0] ?? 0), y: parentWorld.y + current.y + (pts[1] ?? 0) };
+              // Keep the box origin at the other end; store the dragged end
+              // as an offset from it. Resolution rebuilds the frame anyway.
+              const ox = otherWorld.x - parentWorld.x;
+              const oy = otherWorld.y - parentWorld.y;
+              const nx = world.x - parentWorld.x;
+              const ny = world.y - parentWorld.y;
+              const nextPoints = end === "start" ? [nx - ox, ny - oy, 0, 0] : [0, 0, nx - ox, ny - oy];
+              // Rebase the frame origin to the other end so local coords stay small.
+              const next: BoardElement = { ...el };
+              if (end === "start") delete next.connectorStartId;
+              else delete next.connectorEndId;
+              if (end === "start") delete next.connectorStartAnchor;
+              else delete next.connectorEndAnchor;
+              return {
+                ...next,
+                keyframes: {
+                  ...next.keyframes,
+                  [kfId]: {
+                    ...(next.keyframes[kfId] ?? {}),
+                    x: ox,
+                    y: oy,
+                    width: Math.max(1, Math.abs(nx - ox)),
+                    height: Math.max(1, Math.abs(ny - oy)),
+                    connectorPoints: nextPoints,
+                  },
+                },
+              };
+            }),
+          },
+        }));
+      },
+
+      moveConnectorFloatingBy: (connectorId, dx, dy) => {
+        if (dx === 0 && dy === 0) return;
+        const { board, activeBreakpointId } = get();
+        const connector = board.elements.find((el) => el.id === connectorId);
+        if (!connector || connector.type !== "connector") return;
+        // Fully attached lines stay pinned; endpoint handles move those.
+        if (connector.connectorStartId && connector.connectorEndId) return;
+        const kfId = activeBreakpointId ?? BASE_KEYFRAME_ID;
+        saveHistory();
+        set((s) => ({
+          board: {
+            ...s.board,
+            elements: s.board.elements.map((el) => {
+              if (el.id !== connectorId || el.type !== "connector") return el;
+              const current = stateForPresentation(s.board, el, kfId);
+              const pts = [...(current.connectorPoints ?? [0, 0, current.width, current.height])];
+              while (pts.length < 4) pts.push(0);
+              // Attached ends are recomputed from their shapes, so only the
+              // floating ends need their stored positions translated.
+              if (!el.connectorStartId) {
+                pts[0] = (pts[0] ?? 0) + dx;
+                pts[1] = (pts[1] ?? 0) + dy;
+              }
+              if (!el.connectorEndId) {
+                pts[2] = (pts[2] ?? 0) + dx;
+                pts[3] = (pts[3] ?? 0) + dy;
+              }
+              return {
+                ...el,
+                keyframes: {
+                  ...el.keyframes,
+                  [kfId]: {
+                    ...(el.keyframes[kfId] ?? {}),
+                    x: current.x + dx,
+                    y: current.y + dy,
+                    connectorPoints: pts,
+                  },
+                },
+              };
+            }),
+          },
+        }));
+      },
+
+      setConnectorLabelPosition: (connectorId, position, offsetX, offsetY) => {
+        const { activeBreakpointId } = get();
+        const kfId = activeBreakpointId ?? BASE_KEYFRAME_ID;
+        saveHistory();
+        set((s) => ({
+          board: {
+            ...s.board,
+            elements: s.board.elements.map((el) => {
+              if (el.id !== connectorId || el.type !== "connector") return el;
+              return {
+                ...el,
+                keyframes: {
+                  ...el.keyframes,
+                  [kfId]: {
+                    ...(el.keyframes[kfId] ?? {}),
+                    connectorLabelPosition: Math.max(0, Math.min(1, position)),
+                    ...(offsetX !== undefined ? { connectorLabelOffsetX: offsetX } : {}),
+                    ...(offsetY !== undefined ? { connectorLabelOffsetY: offsetY } : {}),
+                  },
+                },
+              };
+            }),
+          },
+        }));
+      },
+
+      createConnector: (start, end) => {
+        const connectorId = newId();
+        const left = Math.min(start.world.x, end.world.x);
+        const top = Math.min(start.world.y, end.world.y);
+        const connector: BoardElement = {
+          id: connectorId,
+          type: "connector",
+          name: "Connector",
+          ...(start.elementId ? { connectorStartId: start.elementId } : {}),
+          ...(start.elementId && start.anchor ? { connectorStartAnchor: start.anchor } : {}),
+          ...(end.elementId ? { connectorEndId: end.elementId } : {}),
+          ...(end.elementId && end.anchor ? { connectorEndAnchor: end.anchor } : {}),
+          base: {
+            ...DEFAULT_STATE,
+            x: left,
+            y: top,
+            width: Math.max(1, Math.abs(end.world.x - start.world.x)),
+            height: Math.max(1, Math.abs(end.world.y - start.world.y)),
+            fill: "#ffffff",
+            stroke: "#64748b",
+            strokeWidth: 2,
+            content: "",
+            connectorEndType: "arrow",
+            connectorPoints: [
+              start.world.x - left,
+              start.world.y - top,
+              end.world.x - left,
+              end.world.y - top,
+            ],
+          },
+          keyframes: {},
+        };
+        saveHistory();
+        set((s) => ({
+          board: { ...s.board, elements: [...s.board.elements, connector] },
+          selectedIds: [connectorId],
+          tool: "select",
+        }));
+        return connectorId;
+      },
+
+      flipConnector: (connectorId) => {
+        const swapFrame = (frame: Partial<ElementState>): Partial<ElementState> => {
+          const next = { ...frame };
+          const hasST = "connectorStartType" in frame;
+          const hasET = "connectorEndType" in frame;
+          if (hasST || hasET) {
+            const sT = frame.connectorStartType;
+            const eT = frame.connectorEndType;
+            if (hasET) next.connectorStartType = eT;
+            else delete next.connectorStartType;
+            if (hasST) next.connectorEndType = sT;
+            else delete next.connectorEndType;
+          }
+          const hasSS = "connectorStartSize" in frame;
+          const hasES = "connectorEndSize" in frame;
+          if (hasSS || hasES) {
+            const sS = frame.connectorStartSize;
+            const eS = frame.connectorEndSize;
+            if (hasES) next.connectorStartSize = eS;
+            else delete next.connectorStartSize;
+            if (hasSS) next.connectorEndSize = sS;
+            else delete next.connectorEndSize;
+          }
+          return next;
+        };
+        saveHistory();
+        set((s) => ({
+          board: {
+            ...s.board,
+            elements: s.board.elements.map((el) => {
+              if (el.id !== connectorId || el.type !== "connector") return el;
+              return {
+                ...el,
+                connectorStartId: el.connectorEndId,
+                connectorEndId: el.connectorStartId,
+                connectorStartAnchor: el.connectorEndAnchor,
+                connectorEndAnchor: el.connectorStartAnchor,
+                base: { ...el.base, ...swapFrame(el.base) },
+                keyframes: Object.fromEntries(
+                  Object.entries(el.keyframes).map(([key, frame]) => [key, swapFrame(frame)]),
+                ),
+              };
+            }),
+          },
+        }));
       },
 
       moveSelectedBy: (dx, dy) => {

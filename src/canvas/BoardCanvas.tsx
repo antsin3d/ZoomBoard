@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { Stage, Layer, Line as KonvaLine, Rect as KonvaRect, Group as KonvaGroup, Transformer } from "react-konva";
+import { Stage, Layer, Line as KonvaLine, Rect as KonvaRect, Ellipse as KonvaEllipse, Group as KonvaGroup, Transformer } from "react-konva";
 import type Konva from "konva";
 import { useBoardStore } from "../whiteboard/store";
 import {
@@ -11,15 +11,22 @@ import {
   type ToolMode,
 } from "../whiteboard/model";
 import ElementNode from "./ElementNode";
+import ConnectorNode from "./ConnectorNode";
 import {
   canvasDropTargetAt,
+  clearLivePositions,
   effectiveSelectionRoots,
+  findAttachTargetAt,
   isCanvasDropTarget,
   isContainer,
   outermostGroupAncestor,
   rendersAsContainer,
   resolveConnectorState,
+  setLivePosition,
+  shapeOutlineWorld,
+  withLiveState,
   worldBoundsAtZoom,
+  anchorPoint,
 } from "../whiteboard/geometry";
 
 const ZOOM_FACTOR = 1.08;
@@ -59,7 +66,7 @@ interface GroupNodeProps {
   onSelect: (id: string, addToSelection?: boolean) => void;
   onDragEnd: (id: string, x: number, y: number) => void;
   onAltDragStart: (id: string) => void;
-  onDragProgress: (id: string) => void;
+  onDragProgress: (id: string, x?: number, y?: number) => void;
   resolveEl: (id: string) => ElementState | null;
   registerNode: (id: string, node: Konva.Group | null) => void;
 }
@@ -175,7 +182,7 @@ function GroupNode({
           if (axisLock.current === "x") node.y(start.y);
           if (axisLock.current === "y") node.x(start.x);
         }
-        onDragProgress(group.id);
+        if (node) onDragProgress(group.id, node.x() - framePivotX, node.y() - framePivotY);
       }}
       onDragEnd={(e) => {
         if (e.target !== groupRef.current) return;
@@ -220,6 +227,22 @@ function GroupNode({
               onAltDragStart={onAltDragStart}
               onDragProgress={onDragProgress}
               resolveEl={resolveEl}
+              registerNode={registerNode}
+            />
+          );
+        }
+        if (child.type === "connector") {
+          return (
+            <ConnectorNode
+              key={child.id}
+              element={child}
+              state={cState}
+              zoom={zoom}
+              isSelected={selectedIds.includes(child.id)}
+              onSelect={onSelect}
+              onDragEnd={onDragEnd}
+              onAltDragStart={onAltDragStart}
+              onDragProgress={onDragProgress}
               registerNode={registerNode}
             />
           );
@@ -270,7 +293,7 @@ interface GroupHitNodeProps {
   onSelect: (id: string, addToSelection?: boolean) => void;
   onDragEnd: (id: string, x: number, y: number) => void;
   onAltDragStart: (id: string) => void;
-  onDragProgress: (id: string) => void;
+  onDragProgress: (id: string, x?: number, y?: number) => void;
   onDragMoveVisual: (id: string, x: number, y: number) => void;
   resolveEl: (id: string) => ElementState | null;
 }
@@ -335,7 +358,7 @@ function GroupHitNode({
           if (axisLock.current === "y") node.x(start.x);
         }
         onDragMoveVisual(group.id, node.x(), node.y());
-        onDragProgress(group.id);
+        onDragProgress(group.id, node.x() - framePivotX, node.y() - framePivotY);
       }}
       onDragEnd={(event) => {
         if (event.target !== hitRef.current) return;
@@ -399,6 +422,7 @@ function GroupHitNode({
 
 interface DrawDragState { startX: number; startY: number; currentX: number; currentY: number; }
 interface MarqueeState  { startX: number; startY: number; curX: number;     curY: number;     }
+interface ConnectorDraft { startX: number; startY: number; curX: number; curY: number; }
 
 export default function BoardCanvas() {
   const stageRef = useRef<Konva.Stage>(null);
@@ -407,6 +431,7 @@ export default function BoardCanvas() {
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [drawDrag, setDrawDrag] = useState<DrawDragState | null>(null);
   const [marqueeDrag, setMarqueeDrag] = useState<MarqueeState | null>(null);
+  const [connectorDraft, setConnectorDraft] = useState<ConnectorDraft | null>(null);
 
   const spaceHeld = useRef(false);
   const isPanning = useRef(false);
@@ -414,6 +439,23 @@ export default function BoardCanvas() {
 
   const dropHighlightRef = useRef<Konva.Rect>(null);
   const dropTargetIdRef = useRef<string | null>(null);
+  // Set when a connector draw commits, to swallow the shape click that follows mouse-up.
+  const suppressClickRef = useRef(false);
+  // rAF-throttled re-render tick for live connector tracking during drags.
+  const [, setLiveTick] = useState(0);
+  const liveRafRef = useRef(0);
+
+  const scheduleLiveTick = useCallback(() => {
+    if (liveRafRef.current) return;
+    liveRafRef.current = requestAnimationFrame(() => {
+      liveRafRef.current = 0;
+      setLiveTick((t) => t + 1);
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
+  }, []);
 
   const {
     board, zoom, panX, panY,
@@ -424,12 +466,24 @@ export default function BoardCanvas() {
     undo, redo, copySelected, pasteClipboard, duplicateSelected, connectSelected,
   } = useBoardStore();
 
+  const handleSelect = useCallback((id: string, addToSelection?: boolean) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    selectElement(id, addToSelection);
+  }, [selectElement]);
+
   const resolveCanvasElement = useCallback((id: string): ElementState | null => {
     const element = board.elements.find((candidate) => candidate.id === id);
     if (!element) return null;
-    return element.type === "connector"
+    const state = element.type === "connector"
       ? resolveConnectorState(board, element, zoom)
       : resolve(id);
+    if (!state) return null;
+    // In-flight drag position: keeps the dragged node under the pointer and
+    // lets attached connectors track it instead of waiting for drop.
+    return withLiveState(state, id);
   }, [board, resolve, zoom]);
 
   useEffect(() => {
@@ -498,6 +552,14 @@ export default function BoardCanvas() {
       return;
     }
 
+    // Connector tool: press anywhere (shape edge or empty space) to start a wire.
+    if (tool === "connector") {
+      const world = screenToWorld(ptr.x, ptr.y, panX, panY, zoom);
+      setConnectorDraft({ startX: world.x, startY: world.y, curX: world.x, curY: world.y });
+      e.evt.preventDefault();
+      return;
+    }
+
     if (e.target === stage) {
       const world = screenToWorld(ptr.x, ptr.y, panX, panY, zoom);
       setDrawDrag({ startX: world.x, startY: world.y, currentX: world.x, currentY: world.y });
@@ -523,13 +585,19 @@ export default function BoardCanvas() {
       setMarqueeDrag((d) => d ? { ...d, curX: world.x, curY: world.y } : null);
       return;
     }
+    if (connectorDraft) {
+      setConnectorDraft((d) => d ? { ...d, curX: world.x, curY: world.y } : null);
+      e.evt.preventDefault();
+      return;
+    }
     if (drawDrag) {
       setDrawDrag((d) => d ? { ...d, currentX: world.x, currentY: world.y } : null);
       e.evt.preventDefault();
     }
-  }, [marqueeDrag, drawDrag, panX, panY, zoom, setPan]);
+  }, [marqueeDrag, connectorDraft, drawDrag, panX, panY, zoom, setPan]);
 
   const handleMouseUp = useCallback(() => {
+    clearLivePositions();
     if (isPanning.current) {
       isPanning.current = false;
       const stage = stageRef.current;
@@ -567,6 +635,38 @@ export default function BoardCanvas() {
       return;
     }
 
+    if (connectorDraft) {
+      const dx = connectorDraft.curX - connectorDraft.startX;
+      const dy = connectorDraft.curY - connectorDraft.startY;
+      const dist = Math.hypot(dx, dy);
+      const s = useBoardStore.getState();
+      const startAt = { x: connectorDraft.startX, y: connectorDraft.startY };
+      const endAt = dist > 6
+        ? { x: connectorDraft.curX, y: connectorDraft.curY }
+        : { x: connectorDraft.startX + 120, y: connectorDraft.startY };
+      const startHit = findAttachTargetAt(s.board, startAt, s.zoom);
+      const endHit = dist > 6 ? findAttachTargetAt(s.board, endAt, s.zoom) : null;
+      const startWorld = startHit
+        ? anchorPoint(startHit.bounds, startHit.anchor, endAt, startHit.element.type)
+        : startAt;
+      const endWorld = endHit
+        ? anchorPoint(endHit.bounds, endHit.anchor, startAt, endHit.element.type)
+        : endAt;
+      s.createConnector(
+        {
+          world: startWorld,
+          ...(startHit ? { elementId: startHit.element.id, anchor: startHit.anchor } : {}),
+        },
+        {
+          world: endWorld,
+          ...(endHit ? { elementId: endHit.element.id, anchor: endHit.anchor } : {}),
+        },
+      );
+      suppressClickRef.current = true;
+      setConnectorDraft(null);
+      return;
+    }
+
     if (drawDrag) {
       const x = Math.min(drawDrag.startX, drawDrag.currentX);
       const y = Math.min(drawDrag.startY, drawDrag.currentY);
@@ -590,7 +690,7 @@ export default function BoardCanvas() {
       setDrawDrag(null);
     }
   }, [
-    marqueeDrag, drawDrag, tool, board.elements, resolveCanvasElement,
+    marqueeDrag, connectorDraft, drawDrag, tool, board.elements, resolveCanvasElement,
     setSelectedIds, addElement, createFrame,
   ]);
 
@@ -639,16 +739,26 @@ export default function BoardCanvas() {
     rect.getLayer()?.batchDraw();
   }, []);
 
-  // Highlight the frame under the pointer, Miro-style, while something is dragged.
-  const handleDragProgress = useCallback((id: string) => {
+  // Live drag feedback: publish the in-flight position so attached
+  // connectors track the node, and highlight the frame under the pointer.
+  const handleDragProgress = useCallback((id: string, x?: number, y?: number) => {
+    if (x !== undefined && y !== undefined) {
+      setLivePosition(id, { x, y });
+      scheduleLiveTick();
+    }
     const { roots, targetId } = resolveDrop(id);
     const alreadyInside =
       targetId !== null && roots.every((root) => (root.parentId ?? null) === targetId);
     paintDropHighlight(alreadyInside ? null : targetId);
-  }, [paintDropHighlight, resolveDrop]);
+  }, [paintDropHighlight, resolveDrop, scheduleLiveTick]);
 
   // Element / group drag end — handles multi-select too.
   const handleDragEnd = useCallback((id: string, newX: number, newY: number) => {
+    clearLivePositions();
+    if (liveRafRef.current) {
+      cancelAnimationFrame(liveRafRef.current);
+      liveRafRef.current = 0;
+    }
     const { board: b, zoom: z, activeBreakpointId: abpId } = useBoardStore.getState();
     const kfId = abpId ?? BASE_KEYFRAME_ID;
     const el = b.elements.find((element) => element.id === id);
@@ -696,6 +806,7 @@ export default function BoardCanvas() {
 
   // Stable callback passed to every ElementNode so they register their Konva
   // Group node in the map. The Transformer then attaches to the right node.
+  // Connectors are edited through their endpoint handles, never the Transformer.
   const registerNode = useCallback((id: string, node: Konva.Group | null) => {
     if (node) {
       nodeMapRef.current.set(id, node);
@@ -704,7 +815,7 @@ export default function BoardCanvas() {
       const element = state.board.elements.find((candidate) => candidate.id === id);
       const transformable = element
         && element.type !== "group"
-        && !(element.type === "connector" && (element.connectorStartId || element.connectorEndId));
+        && element.type !== "connector";
       if (selected && state.tool === "select" && transformable && transformerRef.current) {
         transformerRef.current.nodes([node]);
         transformerRef.current.getLayer()?.batchDraw();
@@ -732,7 +843,7 @@ export default function BoardCanvas() {
     const showTr = single
       && el
       && el.type !== "group"
-      && !(el.type === "connector" && (el.connectorStartId || el.connectorEndId));
+      && el.type !== "connector";
     const node = showTr ? nodeMapRef.current.get(sids[0]) : null;
     tr.nodes(node ? [node] : []);
     tr.getLayer()?.batchDraw();
@@ -888,7 +999,7 @@ export default function BoardCanvas() {
               groupState={state}
               childElements={board.elements.filter((child) => child.parentId === el.id)}
               selectedIds={selectedIds}
-              onSelect={selectElement}
+              onSelect={handleSelect}
               onDragEnd={handleDragEnd}
               onAltDragStart={handleAltDragStart}
               onDragProgress={handleDragProgress}
@@ -921,11 +1032,28 @@ export default function BoardCanvas() {
                 zoom={zoom}
                 isSelected={selectedIds.includes(el.id)}
                 anyChildSelected={childEls.some((c) => selectedIds.includes(c.id))}
-                onSelect={selectElement}
+                onSelect={handleSelect}
                 onDragEnd={handleDragEnd}
                 onAltDragStart={handleAltDragStart}
                 onDragProgress={handleDragProgress}
                 resolveEl={resolveCanvasElement}
+                registerNode={registerNode}
+              />
+            );
+          }
+
+          if (el.type === "connector") {
+            return (
+              <ConnectorNode
+                key={el.id}
+                element={el}
+                state={state}
+                zoom={zoom}
+                isSelected={selectedIds.includes(el.id)}
+                onSelect={handleSelect}
+                onDragEnd={handleDragEnd}
+                onAltDragStart={handleAltDragStart}
+                onDragProgress={handleDragProgress}
                 registerNode={registerNode}
               />
             );
@@ -937,7 +1065,7 @@ export default function BoardCanvas() {
               element={el}
               state={state}
               isSelected={selectedIds.includes(el.id)}
-              onSelect={selectElement}
+              onSelect={handleSelect}
               onDragEnd={handleDragEnd}
               onAltDragStart={handleAltDragStart}
               onDragProgress={handleDragProgress}
@@ -946,19 +1074,92 @@ export default function BoardCanvas() {
           );
         })}
 
+        {/* Connector draw preview — live wire with snap dots */}
+        {connectorDraft && (() => {
+          const s = { x: connectorDraft.startX, y: connectorDraft.startY };
+          const c = { x: connectorDraft.curX, y: connectorDraft.curY };
+          const startHit = findAttachTargetAt(board, s, zoom);
+          const endHit = findAttachTargetAt(board, c, zoom);
+          const snapR = 5 / zoom;
+          const startPt = startHit
+            ? anchorPoint(startHit.bounds, startHit.anchor, c, startHit.element.type)
+            : s;
+          const endPt = endHit
+            ? anchorPoint(endHit.bounds, endHit.anchor, s, endHit.element.type)
+            : c;
+          const renderHit = (
+            hit: NonNullable<ReturnType<typeof findAttachTargetAt>>,
+          ) => {
+            const outline = shapeOutlineWorld(hit.element.type, hit.bounds);
+            const strokeW = 2 / zoom;
+            const dash = [5 / zoom, 4 / zoom];
+            if (outline.kind === "ellipse") {
+              return (
+                <KonvaEllipse
+                  x={hit.bounds.x + hit.bounds.width / 2}
+                  y={hit.bounds.y + hit.bounds.height / 2}
+                  radiusX={hit.bounds.width / 2}
+                  radiusY={hit.bounds.height / 2}
+                  stroke="#22c55e"
+                  strokeWidth={strokeW}
+                  dash={dash}
+                  listening={false}
+                />
+              );
+            }
+            if (outline.kind === "polygon") {
+              return (
+                <KonvaLine
+                  points={outline.points}
+                  closed
+                  stroke="#22c55e"
+                  strokeWidth={strokeW}
+                  dash={dash}
+                  listening={false}
+                />
+              );
+            }
+            return (
+              <KonvaRect
+                x={hit.bounds.x}
+                y={hit.bounds.y}
+                width={hit.bounds.width}
+                height={hit.bounds.height}
+                stroke="#22c55e"
+                strokeWidth={strokeW}
+                dash={dash}
+                listening={false}
+              />
+            );
+          };
+          return (
+            <>
+              <KonvaLine
+                points={[startPt.x, startPt.y, endPt.x, endPt.y]}
+                stroke="#2d8cf0"
+                strokeWidth={2 / zoom}
+                dash={[6 / zoom, 4 / zoom]}
+                listening={false}
+              />
+              {startHit && renderHit(startHit)}
+              {endHit && (
+                <>
+                  {renderHit(endHit)}
+                  <KonvaLine
+                    points={[endPt.x - snapR, endPt.y, endPt.x + snapR, endPt.y, endPt.x, endPt.y - snapR, endPt.x, endPt.y + snapR]}
+                    stroke="#16a34a"
+                    strokeWidth={2 / zoom}
+                    lineCap="round"
+                    listening={false}
+                  />
+                </>
+              )}
+            </>
+          );
+        })()}
+
         {/* Draw-tool preview */}
-        {previewRect && tool === "connector" ? (
-          <KonvaLine
-            points={[
-              previewRect.x, previewRect.y,
-              previewRect.x + previewRect.w, previewRect.y + previewRect.h,
-            ]}
-            stroke="#2d8cf0"
-            strokeWidth={2 / zoom}
-            dash={[6 / zoom, 4 / zoom]}
-            listening={false}
-          />
-        ) : previewRect && (
+        {previewRect && (
           <KonvaRect
             x={previewRect.x} y={previewRect.y}
             width={previewRect.w} height={previewRect.h}

@@ -138,6 +138,17 @@ html, body, #root {
 
 .toolbar-hint { margin-left: auto; font-size: 11px; color: var(--muted); }
 
+.support-btn {
+  gap: 5px;
+  background: #ffdd00;
+  border-color: #e6c700;
+  color: #1b1f24;
+  font-weight: 700;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.support-btn:hover:not(:disabled) { background: #f5d400; }
+
 /* ─── Shared panel chrome ───────────────────────────────────────────────────── */
 .panel-header {
   display: flex; align-items: center; justify-content: space-between;

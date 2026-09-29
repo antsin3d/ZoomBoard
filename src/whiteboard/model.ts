@@ -5,7 +5,17 @@ export type ShapeType = "rect" | "ellipse" | "triangle" | "diamond" | "hexagon" 
 export type ElementType = ShapeType | "text" | "sticky" | "frame" | "connector" | "image" | "group";
 export type TransitionMode = "snap" | "crossfade";
 export type ToolMode = "select" | ShapeType | "text" | "sticky" | "frame" | "connector";
-export type ConnectorStyle = "straight" | "stepped" | "bezier";
+export type ConnectorStyle = "straight" | "stepped" | "curved" | "bezier";
+export type ConnectorEndpointType = "none" | "arrow" | "triangle" | "diamond" | "circle" | "square" | "bar";
+export type ConnectorAnchorSide = "top" | "bottom" | "left" | "right" | "auto";
+export type ConnectorLineDash = "solid" | "dashed" | "dotted";
+
+/** Where a connector endpoint sits on its attached shape's edge. */
+export interface ConnectorAnchor {
+  side: ConnectorAnchorSide;
+  /** 0–1 along the side (x-fraction for top/bottom, y-fraction for left/right). */
+  offset: number;
+}
 
 export type TextAlign = "left" | "center" | "right";
 export type TextVAlign = "top" | "middle" | "bottom";
@@ -87,10 +97,34 @@ export interface ElementState {
   connectorStyle: ConnectorStyle;
   /** Rendered connector line points in element-local coordinates. */
   connectorPoints?: number[];
+  /** Endpoint arrowhead / marker kinds. */
+  connectorStartType: ConnectorEndpointType;
+  connectorEndType: ConnectorEndpointType;
+  /** Arrowhead sizes in world units (before zoom scaling). */
+  connectorStartSize: number;
+  connectorEndSize: number;
+  /** Line dash preset. */
+  connectorDash: ConnectorLineDash;
+  /** Inline label position: 0 = start, 0.5 = middle, 1 = end. */
+  connectorLabelPosition: number;
+  /** Inline label pixel offset from the line. */
+  connectorLabelOffsetX: number;
+  connectorLabelOffsetY: number;
   /** Render-only interpolated horizontal text anchor: 0 = left, 0.5 = center, 1 = right. */
   textAnchorX?: number;
   /** Render-only interpolated vertical text anchor: 0 = top, 0.5 = middle, 1 = bottom. */
   textAnchorY?: number;
+}
+
+export const DEFAULT_CONNECTOR_START_TYPE: ConnectorEndpointType = "none";
+export const DEFAULT_CONNECTOR_END_TYPE: ConnectorEndpointType = "arrow";
+export const DEFAULT_CONNECTOR_ARROW_SIZE = 12;
+
+/** Back-compat: the old "bezier" route renders as the new "curved" route. */
+export function normalizeConnectorStyle(style: ConnectorStyle): "straight" | "stepped" | "curved" {
+  if (style === "bezier" || style === "curved") return "curved";
+  if (style === "stepped") return "stepped";
+  return "straight";
 }
 
 export const DEFAULT_STATE: ElementState = {
@@ -113,7 +147,15 @@ export const DEFAULT_STATE: ElementState = {
   textColor: "#1b1f24",
   textAlign: "center",
   textVAlign: "middle",
-  connectorStyle: "straight",
+  connectorStyle: "stepped",
+  connectorStartType: "none",
+  connectorEndType: "none",
+  connectorStartSize: DEFAULT_CONNECTOR_ARROW_SIZE,
+  connectorEndSize: DEFAULT_CONNECTOR_ARROW_SIZE,
+  connectorDash: "solid",
+  connectorLabelPosition: 0.5,
+  connectorLabelOffsetX: 0,
+  connectorLabelOffsetY: 0,
 };
 
 // ─── Variants ─────────────────────────────────────────────────────────────────
@@ -136,6 +178,9 @@ export const VARIANT_PATCH_KEYS: (keyof ElementState)[] = [
   "content", "fontSize", "fontFamily", "fontStyle", "textDecoration",
   "lineHeight", "textColor", "textAlign", "textVAlign",
   "imageSrc", "fillTextureSrc", "strokeTextureSrc", "connectorStyle",
+  "connectorStartType", "connectorEndType", "connectorStartSize",
+  "connectorEndSize", "connectorDash", "connectorLabelPosition",
+  "connectorLabelOffsetX", "connectorLabelOffsetY",
 ];
 
 export function pickVariantPatch(state: Partial<ElementState>): Partial<ElementState> {
@@ -158,6 +203,9 @@ export interface BoardElement {
   /** Optional attached endpoints for connector elements. */
   connectorStartId?: string;
   connectorEndId?: string;
+  /** Edge anchors for attached endpoints. Absent = automatic (face the other end). */
+  connectorStartAnchor?: ConnectorAnchor;
+  connectorEndAnchor?: ConnectorAnchor;
   /** Named reusable representations for breakpoint-based content swaps. */
   variants?: Variant[];
   /**
@@ -319,6 +367,14 @@ function interpolateStates(a: ElementState, b: ElementState, t: number): Element
     strokeTextureSrc: t < 0.5 ? a.strokeTextureSrc : b.strokeTextureSrc,
     connectorStyle: t < 0.5 ? a.connectorStyle : b.connectorStyle,
     connectorPoints: t < 0.5 ? a.connectorPoints : b.connectorPoints,
+    connectorStartType: t < 0.5 ? a.connectorStartType : b.connectorStartType,
+    connectorEndType: t < 0.5 ? a.connectorEndType : b.connectorEndType,
+    connectorStartSize: lerp(a.connectorStartSize, b.connectorStartSize, t),
+    connectorEndSize: lerp(a.connectorEndSize, b.connectorEndSize, t),
+    connectorDash: t < 0.5 ? a.connectorDash : b.connectorDash,
+    connectorLabelPosition: lerp(a.connectorLabelPosition, b.connectorLabelPosition, t),
+    connectorLabelOffsetX: lerp(a.connectorLabelOffsetX, b.connectorLabelOffsetX, t),
+    connectorLabelOffsetY: lerp(a.connectorLabelOffsetY, b.connectorLabelOffsetY, t),
     textAnchorX: lerp(textAlignAnchor(a.textAlign), textAlignAnchor(b.textAlign), t),
     textAnchorY: lerp(textVAlignAnchor(a.textVAlign), textVAlignAnchor(b.textVAlign), t),
   };

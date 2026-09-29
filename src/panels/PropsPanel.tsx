@@ -8,8 +8,12 @@ import {
   VARIANT_PATCH_KEYS,
   activeVariant,
   breakpointColor,
+  normalizeConnectorStyle,
   pickVariantPatch,
   resolveStateDirect,
+  type ConnectorAnchorSide,
+  type ConnectorEndpointType,
+  type ConnectorLineDash,
   type ElementState,
   type BoardElement,
   type TextAlign,
@@ -207,6 +211,118 @@ function AlignGrid({
 
 // ─── State editor ─────────────────────────────────────────────────────────────
 
+const ENDPOINT_OPTIONS: { label: string; value: ConnectorEndpointType }[] = [
+  { label: "None", value: "none" },
+  { label: "Arrow", value: "arrow" },
+  { label: "Triangle", value: "triangle" },
+  { label: "Diamond", value: "diamond" },
+  { label: "Circle", value: "circle" },
+  { label: "Square", value: "square" },
+  { label: "Bar", value: "bar" },
+];
+
+const ANCHOR_SIDE_OPTIONS: { label: string; value: ConnectorAnchorSide }[] = [
+  { label: "Auto", value: "auto" },
+  { label: "Top", value: "top" },
+  { label: "Bottom", value: "bottom" },
+  { label: "Left", value: "left" },
+  { label: "Right", value: "right" },
+];
+
+function ConnectorEndpointsEditor({
+  el, state, change,
+}: {
+  el: BoardElement;
+  state: ElementState;
+  change: (patch: Partial<ElementState>) => void;
+}) {
+  const board = useBoardStore((s) => s.board);
+  const attachConnectorEnd = useBoardStore((s) => s.attachConnectorEnd);
+  const startName = el.connectorStartId
+    ? board.elements.find((c) => c.id === el.connectorStartId)?.name ?? "Shape"
+    : null;
+  const endName = el.connectorEndId
+    ? board.elements.find((c) => c.id === el.connectorEndId)?.name ?? "Shape"
+    : null;
+
+  const endpointRow = (
+    end: "start" | "end",
+    type: ConnectorEndpointType | undefined,
+    typeKey: "connectorStartType" | "connectorEndType",
+    size: number,
+    sizeKey: "connectorStartSize" | "connectorEndSize",
+  ) => (
+    <div className="prop-row">
+      <SelectField
+        label={end === "start" ? "Start" : "End"}
+        value={type ?? "none"}
+        options={ENDPOINT_OPTIONS}
+        onChange={(v) => change({ [typeKey]: v } as Partial<ElementState>)}
+      />
+      <NumField
+        label="Size"
+        value={size ?? 12}
+        onChange={(v) => change({ [sizeKey]: Math.max(4, v) } as Partial<ElementState>)}
+        min={4} max={48}
+      />
+    </div>
+  );
+
+  const attachRow = (
+    end: "start" | "end",
+    attachedName: string | null,
+    anchorSide: ConnectorAnchorSide,
+    targetId: string | undefined,
+  ) => (
+    <div className="prop-row">
+      <div className="prop-field">
+        <span className="prop-label">{end === "start" ? "Start link" : "End link"}</span>
+        <div className="texture-actions">
+          <span className="prop-color-text">{attachedName ?? "Floating"}</span>
+          {targetId && (
+            <button
+              type="button"
+              className="variant-btn variant-btn-danger"
+              title="Detach into empty space (keeps its position)"
+              onClick={() => attachConnectorEnd(el.id, end, null)}
+            >
+              Detach
+            </button>
+          )}
+        </div>
+      </div>
+      {targetId && (
+        <label className="prop-field">
+          <span className="prop-label">Edge</span>
+          <select
+            className="prop-input prop-select"
+            value={anchorSide}
+            onChange={(e) => attachConnectorEnd(
+              el.id,
+              end,
+              targetId,
+              { side: e.target.value as ConnectorAnchorSide, offset: 0.5 },
+            )}
+          >
+            {ANCHOR_SIDE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </label>
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      {endpointRow("start", state.connectorStartType, "connectorStartType", state.connectorStartSize, "connectorStartSize")}
+      {attachRow("start", startName, el.connectorStartAnchor?.side ?? "auto", el.connectorStartId)}
+      {endpointRow("end", state.connectorEndType, "connectorEndType", state.connectorEndSize, "connectorEndSize")}
+      {attachRow("end", endName, el.connectorEndAnchor?.side ?? "auto", el.connectorEndId)}
+    </>
+  );
+}
+
 interface StateEditorProps {
   el: BoardElement;
   state: ElementState;
@@ -313,7 +429,11 @@ function StateEditor({
         <>
           <div className="prop-row">
             <OverrideDot k="fill" />
-            <ColorField label="Fill" value={state.fill} onChange={(v) => change({ fill: v })} />
+            <ColorField
+              label={el.type === "connector" ? "Label bg" : "Fill"}
+              value={state.fill}
+              onChange={(v) => change({ fill: v })}
+            />
           </div>
           <div className="prop-row">
             <OverrideDot k="stroke" />
@@ -353,22 +473,80 @@ function StateEditor({
         </>
       )}
       {el.type === "connector" && (
-        <div className="prop-row">
-          <OverrideDot k="connectorStyle" />
-          <SelectField
-            label="Route"
-            value={state.connectorStyle}
-            options={[
-              { label: "Straight", value: "straight" },
-              { label: "Stepped", value: "stepped" },
-              { label: "Bezier spline", value: "bezier" },
-            ]}
-            onChange={(value) => change({ connectorStyle: value as ElementState["connectorStyle"] })}
-          />
-        </div>
+        <>
+          <div className="prop-section-title">Line</div>
+          <div className="prop-row">
+            <OverrideDot k="connectorStyle" />
+            <SelectField
+              label="Route"
+              value={normalizeConnectorStyle(state.connectorStyle)}
+              options={[
+                { label: "Straight", value: "straight" },
+                { label: "Stepped", value: "stepped" },
+                { label: "Curved", value: "curved" },
+              ]}
+              onChange={(value) => change({ connectorStyle: value as ElementState["connectorStyle"] })}
+            />
+            <OverrideDot k="connectorDash" />
+            <SelectField
+              label="Style"
+              value={state.connectorDash ?? "solid"}
+              options={[
+                { label: "Solid", value: "solid" },
+                { label: "Dashed", value: "dashed" },
+                { label: "Dotted", value: "dotted" },
+              ]}
+              onChange={(value) => change({ connectorDash: value as ConnectorLineDash })}
+            />
+          </div>
+          <div className="prop-row">
+            <div className="prop-field">
+              <span className="prop-label">Direction</span>
+              <div className="texture-actions">
+                <button
+                  type="button"
+                  className="variant-btn"
+                  title="Swap start and end (attachments, anchors and arrowheads)"
+                  onClick={() => useBoardStore.getState().flipConnector(el.id)}
+                >
+                  ⇄ Flip ends
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="prop-section-title">Endpoints</div>
+          <ConnectorEndpointsEditor el={el} state={state} change={change} />
+          <div className="prop-section-title">Label position</div>
+          <div className="prop-row">
+            <OverrideDot k="connectorLabelPosition" />
+            <NumField
+              label="Along %"
+              value={Math.round((state.connectorLabelPosition ?? 0.5) * 100)}
+              onChange={(v) => change({ connectorLabelPosition: Math.max(0, Math.min(100, v)) / 100 })}
+              min={0} max={100}
+            />
+            <OverrideDot k="connectorLabelOffsetX" />
+            <NumField
+              label="DX"
+              value={state.connectorLabelOffsetX ?? 0}
+              onChange={(v) => change({ connectorLabelOffsetX: v })}
+              step={1}
+            />
+            <OverrideDot k="connectorLabelOffsetY" />
+            <NumField
+              label="DY"
+              value={state.connectorLabelOffsetY ?? 0}
+              onChange={(v) => change({ connectorLabelOffsetY: v })}
+              step={1}
+            />
+          </div>
+          <div className="transition-hint">
+            Drag the white handles to attach each end to any shape edge or drop it into empty space. Drag the label to slide it along the line. Type label text below — Fill controls its background (transparent = text only).
+          </div>
+        </>
       )}
 
-      <div className="prop-section-title">Text</div>
+      <div className="prop-section-title">Text{el.type === "connector" ? " label" : ""}</div>
       <div className="prop-row">
         <OverrideDot k="content" />
         <TextAreaField
@@ -438,6 +616,7 @@ function StateEditor({
           step={0.1}
         />
       </div>
+      {el.type !== "connector" && (
       <div className="prop-row align-row">
         <OverrideDot k="textAlign" />
         <div className="prop-field">
@@ -454,6 +633,7 @@ function StateEditor({
           />
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -79,7 +79,7 @@ interface Props {
   onDragEnd: (id: string, x: number, y: number) => void;
   onAltDragStart?: (id: string) => void;
   /** Fired while dragging so the canvas can preview the drop container. */
-  onDragProgress?: (id: string) => void;
+  onDragProgress?: (id: string, x?: number, y?: number) => void;
   registerNode?: (id: string, node: Konva.Group | null) => void;
 }
 
@@ -253,7 +253,7 @@ export default function ElementNode({
           if (axisLock.current === "x") node.y(start.y);
           if (axisLock.current === "y") node.x(start.x);
         }
-        onDragProgress?.(element.id);
+        if (node) onDragProgress?.(element.id, node.x() - pivotX, node.y() - pivotY);
       }}
       onDragEnd={(e) => {
         if (e.target !== groupRef.current) return;
@@ -309,8 +309,8 @@ export default function ElementNode({
                 : state.connectorPoints ?? [0, 0, width, height]
           }
           bezier={state.connectorStyle === "bezier"}
-          stroke={isSelected ? selColor : stroke}
-          strokeWidth={isSelected ? SELECTION_WIDTH : strokeWidth}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
           hitStrokeWidth={12}
           lineCap="round"
           lineJoin="round"
@@ -320,8 +320,8 @@ export default function ElementNode({
           width={width}
           height={height}
           fill={element.type === "frame" ? "transparent" : fill}
-          stroke={isSelected ? selColor : stroke}
-          strokeWidth={isSelected ? SELECTION_WIDTH : strokeWidth}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
           sceneFunc={(context) => {
             const ctx = context._context;
             shapePath(ctx, element.type, width, height);
@@ -337,9 +337,20 @@ export default function ElementNode({
                 ctx.fill();
               }
             }
-            ctx.lineWidth = isSelected ? SELECTION_WIDTH : strokeWidth;
-            ctx.strokeStyle = isSelected ? selColor : stroke;
-            if (strokeTexture && !isSelected) {
+            // Selection halo under the real stroke so width edits stay visible.
+            if (isSelected) {
+              ctx.save();
+              ctx.lineWidth = Math.max(strokeWidth, 1) + SELECTION_WIDTH * 2;
+              ctx.strokeStyle = selColor;
+              ctx.globalAlpha = 0.55;
+              if (element.type === "frame") ctx.setLineDash([8, 5]);
+              ctx.stroke();
+              ctx.restore();
+              shapePath(ctx, element.type, width, height);
+            }
+            ctx.lineWidth = strokeWidth;
+            ctx.strokeStyle = stroke;
+            if (strokeTexture) {
               const pattern = ctx.createPattern(strokeTexture, "repeat");
               if (pattern) ctx.strokeStyle = pattern;
             }

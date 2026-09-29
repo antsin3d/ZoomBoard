@@ -7,7 +7,35 @@ import { useBoardStore } from "./whiteboard/store";
 import { TIERS } from "./whiteboard/tiers";
 import { deserializeBoard, serializeBoard } from "./whiteboard/document";
 import { openBoardFile, saveBoardFile } from "./whiteboard/fileIO";
+import { isTauri } from "@tauri-apps/api/core";
 import { breakpointColor, type ShapeType, type ToolMode } from "./whiteboard/model";
+
+const SUPPORT_URL = "https://www.buymeacoffee.com/GetUp";
+
+function SupportButton() {
+  const handleClick = async () => {
+    if (isTauri()) {
+      try {
+        const { open } = await import("@tauri-apps/plugin-shell");
+        await open(SUPPORT_URL);
+        return;
+      } catch {
+        // Fall through to a plain browser open below.
+      }
+    }
+    window.open(SUPPORT_URL, "_blank", "noopener,noreferrer");
+  };
+  return (
+    <button
+      type="button"
+      className="tool-btn support-btn"
+      onClick={() => void handleClick()}
+      title="Support me on Buy Me a Coffee"
+    >
+      <span aria-hidden="true">☕</span><span>Support</span>
+    </button>
+  );
+}
 
 // ─── Toolbar ──────────────────────────────────────────────────────────────────
 
@@ -42,54 +70,24 @@ function ShapeMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [lastShape, setLastShape] = useState<ShapeType>("rect");
-  const hoverTimer = useRef<number | null>(null);
-  const longPressTimer = useRef<number | null>(null);
-  const longPressTriggered = useRef(false);
   const active = SHAPE_TOOLS.find((shape) => shape.id === lastShape) ?? SHAPE_TOOLS[0];
 
   useEffect(() => {
     if (SHAPE_TOOLS.some((shape) => shape.id === tool)) setLastShape(tool as ShapeType);
   }, [tool]);
 
-  const clearTimer = (timer: { current: number | null }) => {
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    timer.current = null;
-  };
-
   return (
     <div
       className="shape-menu"
-      onMouseEnter={() => {
-        clearTimer(hoverTimer);
-        hoverTimer.current = window.setTimeout(() => setOpen(true), 250);
-      }}
-      onMouseLeave={() => {
-        clearTimer(hoverTimer);
-        setOpen(false);
-      }}
+      onMouseLeave={() => setOpen(false)}
     >
       <button
         type="button"
         className={`tool-btn shape-menu-trigger${SHAPE_TOOLS.some((shape) => shape.id === tool) ? " tool-active" : ""}`}
-        title={`${active.title} · Hover or hold for more shapes`}
-        onPointerDown={() => {
-          clearTimer(longPressTimer);
-          longPressTriggered.current = false;
-          longPressTimer.current = window.setTimeout(() => {
-            longPressTriggered.current = true;
-            setOpen(true);
-          }, 450);
-        }}
-        onPointerUp={() => clearTimer(longPressTimer)}
-        onPointerCancel={() => clearTimer(longPressTimer)}
+        title={`${active.title} · Click to select and show more shapes`}
         onClick={() => {
-          clearTimer(hoverTimer);
-          if (longPressTriggered.current) {
-            longPressTriggered.current = false;
-            return;
-          }
-          setOpen(false);
           onSelect(lastShape);
+          setOpen((wasOpen) => !wasOpen);
         }}
       >
         <span>{active.label}</span><span className="shape-menu-caret">⌄</span>
@@ -128,6 +126,35 @@ function Toolbar() {
   const [documentPath, setDocumentPath] = useState<string | null>(null);
   const [documentName, setDocumentName] = useState("Untitled.board");
   const [fileBusy, setFileBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  const documentPathRef = useRef(documentPath);
+  const documentNameRef = useRef(documentName);
+  const boardRef = useRef(board);
+  const dirtyRef = useRef(dirty);
+  const lastSavedRef = useRef(serializeBoard(board));
+  const fileBusyRef = useRef(fileBusy);
+  const closingRef = useRef(false);
+  documentPathRef.current = documentPath;
+  documentNameRef.current = documentName;
+  boardRef.current = board;
+  dirtyRef.current = dirty;
+  fileBusyRef.current = fileBusy;
+
+  const markClean = useCallback((nextBoard: typeof board) => {
+    lastSavedRef.current = serializeBoard(nextBoard);
+    dirtyRef.current = false;
+    setDirty(false);
+  }, []);
+
+  useEffect(() => {
+    return useBoardStore.subscribe((state, prev) => {
+      if (state.board === prev.board) return;
+      const isDirty = serializeBoard(state.board) !== lastSavedRef.current;
+      dirtyRef.current = isDirty;
+      setDirty(isDirty);
+    });
+  }, []);
 
   const activeTierObj = TIERS.find((t) => t.id === activeTier);
   // Use the store's zone-aware activeBreakpointId — not a manual cascade lookup.
@@ -147,31 +174,44 @@ function Toolbar() {
     try {
       const opened = await openBoardFile();
       if (!opened) return;
-      replaceBoard(deserializeBoard(opened.contents));
+      const nextBoard = deserializeBoard(opened.contents);
+      replaceBoard(nextBoard);
       setDocumentPath(opened.path);
       setDocumentName(opened.name);
+      markClean(nextBoard);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "The board could not be opened.");
     } finally {
       setFileBusy(false);
     }
-  }, [fileBusy, replaceBoard]);
+  }, [fileBusy, markClean, replaceBoard]);
 
-  const handleSave = useCallback(async () => {
-    if (fileBusy) return;
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (fileBusyRef.current) return false;
     setFileBusy(true);
+    fileBusyRef.current = true;
     try {
-      const savedPath = await saveBoardFile(serializeBoard(board), documentPath, documentName);
-      if (savedPath) {
-        setDocumentPath(savedPath);
-        setDocumentName(savedPath.split(/[\\/]/).pop() ?? documentName);
-      }
+      const currentBoard = boardRef.current;
+      const savedPath = await saveBoardFile(
+        serializeBoard(currentBoard),
+        documentPathRef.current,
+        documentNameRef.current,
+      );
+      if (!savedPath) return false;
+      setDocumentPath(savedPath);
+      setDocumentName(savedPath.split(/[\\/]/).pop() ?? documentNameRef.current);
+      documentPathRef.current = savedPath;
+      documentNameRef.current = savedPath.split(/[\\/]/).pop() ?? documentNameRef.current;
+      markClean(currentBoard);
+      return true;
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "The board could not be saved.");
+      return false;
     } finally {
       setFileBusy(false);
+      fileBusyRef.current = false;
     }
-  }, [board, documentName, documentPath, fileBusy]);
+  }, [markClean]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -188,10 +228,67 @@ function Toolbar() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [handleOpen, handleSave]);
 
+  // Ask to save unsaved changes before the window closes.
+  useEffect(() => {
+    if (!isTauri()) {
+      const onBeforeUnload = (event: BeforeUnloadEvent) => {
+        if (!dirtyRef.current) return;
+        event.preventDefault();
+        event.returnValue = "";
+      };
+      window.addEventListener("beforeunload", onBeforeUnload);
+      return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    }
+
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const { message } = await import("@tauri-apps/plugin-dialog");
+      if (cancelled) return;
+      const appWindow = getCurrentWindow();
+      unlisten = await appWindow.onCloseRequested(async (event) => {
+        if (!dirtyRef.current || closingRef.current) return;
+        event.preventDefault();
+        if (fileBusyRef.current) return;
+
+        const answer = await message(
+          `Do you want to save changes to "${documentNameRef.current}"?`,
+          {
+            title: "Whiteboard",
+            kind: "warning",
+            buttons: {
+              yes: "Save",
+              no: "Don't Save",
+              cancel: "Cancel",
+            },
+          },
+        );
+
+        if (answer === "Cancel") return;
+        if (answer === "Save") {
+          const saved = await handleSave();
+          if (!saved) return;
+        }
+
+        closingRef.current = true;
+        dirtyRef.current = false;
+        await appWindow.destroy();
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [handleSave]);
+
+  const displayName = documentName.replace(/\.board$/i, "");
+
   return (
     <div className="toolbar">
       <div className="toolbar-brand" title={documentPath ?? documentName}>
-        Whiteboard · {documentName.replace(/\.board$/i, "")}
+        Whiteboard · {displayName}{dirty ? " *" : ""}
       </div>
 
       <div className="toolbar-undo">
@@ -272,7 +369,8 @@ function Toolbar() {
       </div>
 
       {/* Keyboard shortcut hint */}
-      <div className="toolbar-hint">V · R · T · S · F · C · Ctrl+G group · Shift+click multi</div>
+      <div className="toolbar-hint">V · R · T · S · F · C drag to connect · Ctrl+G group · Shift+click multi</div>
+      <SupportButton />
     </div>
   );
 }
