@@ -15,10 +15,18 @@ zoom axis*. Explore a data hierarchy by zooming through levels of abstraction
 
 ## Status
 
-🚧 Working prototype. Zoom breakpoints/tiers, per-tier element properties,
-LOD variants, transitions, grouping, resizing, undo/redo, sticky notes, frames,
-connectors, embedded images, and single-file board persistence are implemented.
-See [`PLAN.md`](./PLAN.md) for the remaining roadmap.
+🚧 Working prototype. Implemented:
+
+- Zoom breakpoints / tiers, per-tier properties, LOD variants, and transitions
+- Shapes, text, sticky notes, frames, connectors, groups, embedded images
+- Layers, props, zoom timeline, undo/redo, align, open/save `.board` files
+- **Remote collaboration (preview):** host-owned peer sessions with invite
+  links/codes, shared cursors, follow, favorites with online status, and
+  host-controlled guest editing / download permissions
+
+See [`PLAN.md`](./PLAN.md) for the remaining roadmap and
+[`docs/collaboration.md`](./docs/collaboration.md) for collaboration details
+and limits.
 
 ## Stack
 
@@ -26,22 +34,33 @@ See [`PLAN.md`](./PLAN.md) for the remaining roadmap.
 - **TypeScript + React** UI
 - **Konva** (`react-konva`) infinite-canvas engine
 - **Yjs** live session document and offline `.board` encoding
+- **PeerJS / WebRTC** for host-owned remote sessions (signaling + STUN only;
+  no app-operated servers)
 
-All dependencies are permissive (MIT / Apache-2.0).
+All primary dependencies are permissive (MIT / Apache-2.0). Collaboration uses
+third-party public PeerJS signaling and STUN; see the collaboration docs.
 
 ## Develop
 
 ```bash
 pnpm install
-pnpm dev          # run the canvas in a browser (proves the Zoom Breakpoints feature)
+pnpm dev          # canvas in a browser
+pnpm test         # protocol / session / framing tests
+pnpm build        # TypeScript check + production frontend
 ```
 
 **Desktop build** (Tauri) additionally requires the Rust toolchain:
 
 ```bash
 # Install Rust (https://rustup.rs) + the MSVC C++ build tools on Windows
-pnpm tauri dev    # run the native desktop window
+pnpm tauri dev    # native desktop window
+pnpm tauri build  # release .exe / setup / MSI under src-tauri/target/release
 ```
+
+Built Windows artifacts are also copied to [`release/`](./release/) when packaging
+locally (`Whiteboard.exe`, `Whiteboard-setup.exe`, MSI). Use the **setup
+installer** if you want `whiteboard://` invite links to open the app; paste into
+**Share / Join** still works with the portable exe.
 
 ## Board files
 
@@ -49,20 +68,34 @@ Use **Open** (`Ctrl/Cmd+O`) and **Save** (`Ctrl/Cmd+S`) in the toolbar. Desktop
 builds use native file dialogs and save a versioned Yjs-backed `.board` file.
 Browser development uses file upload/download as a fallback.
 
+After you host a session the first time (or rotate an invite), **Save** again so
+the reusable invite identity is stored in that board file.
+
 ## Remote collaboration (preview)
 
-Use **Share / Join** to host a board or paste an invite link/code. Sessions
-include shared cursors, follow, local favorites with reachability checks, and
-host-controlled editing and Save/Copy permissions. Save after first sharing
-to preserve the reusable invite in your board file.
+1. Open **Share / Join**, set a display name, and **Host this board**.
+2. Copy the invite **link** or **code** and send it (Slack, etc.). Guests paste
+   it into Join, or click a `whiteboard://` link if the app is installed.
+3. Guests see live cursors, can **Follow** a participant, and can **Favorite**
+   a session (local list with reachability checks while the panel is open).
+4. The host can allow editing, allow download/copy, remove a guest, or rotate
+   the invite. Sharing ends when the host closes the session or the app.
+5. Leaving a session restores your original local board; guest “Save copy”
+   (when allowed) writes an independent file without the host’s credentials.
 
-No servers to operate: public PeerJS signaling and STUN help establish direct
-WebRTC connections. There is no TURN fallback, so some networks cannot connect.
-Guests receive board data even when Save/Copy is disabled; this is not copy
-protection. See [collaboration details and limits](docs/collaboration.md).
+**Important limits**
 
-Run `pnpm test` for automated protocol/lifecycle tests and `pnpm build` for the
-TypeScript and production frontend build.
+- No servers for you to operate, but connections depend on public PeerJS
+  signaling and STUN. There is **no TURN relay**, so some networks cannot
+  connect.
+- Sessions are **host-owned** and opt-in each time you click Host — opening a
+  file does not auto-share.
+- **Allow download** is an app Save/Copy policy, not copy protection; guests
+  still receive board data to view it.
+- Treat invites, favorites, and the master `.board` as sensitive.
+
+Full protocol notes, identity model, and verification checklist:
+[`docs/collaboration.md`](./docs/collaboration.md).
 
 ## License
 
