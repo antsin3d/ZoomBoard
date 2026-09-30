@@ -49,6 +49,41 @@ describe("region editing", () => {
     expect(presentationState(element(), firstId()).opacity).toBe(1);
   });
 
+  it("copies selected objects' settings from one region and pastes them into another", () => {
+    store().replaceBoard({
+      ...fresh(),
+      elements: [
+        ...fresh().elements,
+        { id: "other", name: "Other", type: "ellipse", base: { ...DEFAULT_STATE }, keyframes: {} },
+      ],
+    });
+    store().setZoom(1);
+    const left = firstId();
+    const right = store().addBreakpoint(1);
+    store().setKeyframe("shape", right, { fill: "#ff0000", x: 40 });
+    store().setKeyframe("other", right, { opacity: 0.4 });
+    store().setSelectedIds(["shape", "other"]);
+    expect(store().copyRegionSettings()).toBe(2);
+
+    store().setZoom(0.25);
+    expect(store().activeBreakpointId).toBe(left);
+    const undoDepth = store()._past.length;
+    expect(store().pasteRegionSettings()).toBe(2);
+    expect(store()._past.length).toBe(undoDepth + 1);
+    const byId = (id: string) => store().board.elements.find((el) => el.id === id)!;
+    expect(presentationState(byId("shape"), left)).toMatchObject({ fill: "#ff0000", x: 40 });
+    expect(presentationState(byId("other"), left).opacity).toBe(0.4);
+    expect(store().pasteRegionSettings()).toBe(0);
+
+    store().setKeyframe("shape", left, { rotation: 30 });
+    store().setSelectedIds(["shape"]);
+    expect(store().pasteRegionSettings()).toBe(1);
+    expect(presentationState(byId("shape"), left).rotation).toBe(0);
+
+    store().undo();
+    expect(presentationState(byId("shape"), left).rotation).toBe(30);
+  });
+
   it("never reveals hidden elements when adding an identical tween", () => {
     store().setKeyframe("shape", firstId(), { visible: false });
     const right = store().addBreakpoint(1);
@@ -167,9 +202,14 @@ describe("region editing", () => {
 
   it("guards region mutations for read-only guests", () => {
     const right = store().addBreakpoint(1);
+    store().setKeyframe("shape", right, { fill: "#123456" });
+    store().setSelectedIds(["shape"]);
+    store().copyRegionSettings();
+    store().setZoom(0.25);
     const before = store().board;
     const history = store()._past.length;
     setBoardAccess(false, false);
+    expect(store().pasteRegionSettings()).toBe(0);
     expect(store().addBreakpoint(2)).toBe("");
     store().updateBreakpoint(right, { zoom: 2 });
     store().removeBreakpoint(right);

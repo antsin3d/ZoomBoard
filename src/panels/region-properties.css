@@ -5,6 +5,9 @@
   font-size: 11px;
 }
 
+.props-panel .region-settings-actions { margin-top: 6px; }
+.props-panel .region-property-context .region-property-hint { padding: 4px 0 0; }
+
 .props-panel .region-customization-dot,
 .props-panel .region-customization-placeholder {
   display: inline-block;

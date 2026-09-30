@@ -89,6 +89,10 @@ the reusable invite identity is stored in that board file.
   them into the leftmost region's appearance (Escape clears the selection).
   Splits, property edits, merges, and divider/tween drags support undo/redo.
 - Double-click a shape to select it and jump straight into its text field.
+- **Copy settings** / **Paste settings** in the Properties panel (Ctrl+Alt+C /
+  Ctrl+Alt+V) copy the selected objects' full appearance in the current region,
+  then apply it to the same objects in whichever region you move to. Paste
+  targets the selected copied objects, or all copied objects when none are selected.
 
 Existing local `.board` files are upgraded when opened: their zoom-level
 appearances and assigned variants become region properties. Save to retain

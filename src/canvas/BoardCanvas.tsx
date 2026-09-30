@@ -1048,6 +1048,12 @@ export default function BoardCanvas() {
       const inInput = (e.target as HTMLElement)?.closest?.("input,textarea,select,[contenteditable=true]");
       if (inInput) return;
 
+      if ((e.ctrlKey || e.metaKey) && e.altKey && ["c", "v"].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        if (e.key.toLowerCase() === "c") useBoardStore.getState().copyRegionSettings();
+        else useBoardStore.getState().pasteRegionSettings();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
         e.preventDefault();
         if (canCopyBoard()) void copySelected();

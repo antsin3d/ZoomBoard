@@ -35,7 +35,7 @@ export function validateRegionTimeline(breakpoints: readonly Breakpoint[]): void
   }
 }
 
-function sparseState(base: ElementState, state: ElementState): Partial<ElementState> {
+export function sparseState(base: ElementState, state: ElementState): Partial<ElementState> {
   const patch: Partial<ElementState> = {};
   for (const key of Object.keys(state) as (keyof ElementState)[]) {
     if (JSON.stringify(state[key]) !== JSON.stringify(base[key])) {

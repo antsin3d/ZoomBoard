@@ -15,8 +15,9 @@ import {
   resolveStateDirect,
   activeBreakpoint,
   isRegionTimeline,
+  presentationState,
 } from "./model";
-import { createRegionTimeline } from "./regions";
+import { createRegionTimeline, sparseState } from "./regions";
 import { canCutRegion } from "./regionEditing";
 import { resolveTier, rawTier, type TierId } from "./tiers";
 import { initializeBoardDocument, syncBoardDocument } from "./document";
@@ -219,6 +220,11 @@ export interface BoardStore {
   shiftHeld: boolean;
   /** One-shot request for the Properties panel to focus an element's text. */
   textEditRequest: { id: string; nonce: number } | null;
+  /** Per-object region appearances copied for pasting into another region. */
+  regionSettingsClipboard: { sourceRegionId: string; states: Record<string, ElementState> } | null;
+  copyRegionSettings: () => number;
+  /** Returns how many objects received the copied settings. */
+  pasteRegionSettings: () => number;
 
   // ── Actions: viewport ──
   setZoom: (zoom: number) => void;
@@ -384,6 +390,43 @@ export const useBoardStore = create<BoardStore>()(
       tool: "select",
       shiftHeld: false,
       textEditRequest: null,
+      regionSettingsClipboard: null,
+
+      copyRegionSettings: () => {
+        const { board, selectedIds, activeBreakpointId } = get();
+        const key = activeBreakpointId ?? BASE_KEYFRAME_ID;
+        const states: Record<string, ElementState> = {};
+        for (const el of board.elements) {
+          if (selectedIds.includes(el.id)) states[el.id] = structuredClone(presentationState(el, key));
+        }
+        const count = Object.keys(states).length;
+        if (count) set({ regionSettingsClipboard: { sourceRegionId: key, states } });
+        return count;
+      },
+
+      pasteRegionSettings: () => {
+        const { board, selectedIds, activeBreakpointId, regionSettingsClipboard } = get();
+        if (!regionSettingsClipboard || !canEditBoard()) return 0;
+        const key = activeBreakpointId ?? BASE_KEYFRAME_ID;
+        const copied = regionSettingsClipboard.states;
+        // Paste onto the selected copied objects; with no such selection,
+        // paste onto every copied object that still exists.
+        const selected = selectedIds.filter((id) => id in copied);
+        const targets = new Set(selected.length ? selected : Object.keys(copied));
+        const elements = board.elements.map((el) => {
+          if (!targets.has(el.id)) return el;
+          // Replace the whole region patch so the destination matches exactly,
+          // including properties the source left at their original values.
+          const patch = sparseState({ ...DEFAULT_STATE, ...el.base }, copied[el.id]);
+          if (JSON.stringify(patch) === JSON.stringify(el.keyframes[key] ?? {})) return el;
+          return { ...el, keyframes: { ...el.keyframes, [key]: structuredClone(patch) } };
+        });
+        const changed = elements.filter((el, index) => el !== board.elements[index]).length;
+        if (!changed) return 0;
+        saveHistory();
+        set({ board: { ...board, elements } });
+        return changed;
+      },
 
       // ── Undo / Redo ───────────────────────────────────────────────────────
 

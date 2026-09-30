@@ -655,6 +655,52 @@ const ARRANGE_ACTIONS: Array<{ mode: ArrangeMode; label: string; title: string; 
   { mode: "grid", label: "⊞", title: "Arrange in grid", min: 2 },
 ];
 
+function RegionSettingsBar() {
+  const board = useBoardStore((s) => s.board);
+  const selectedIds = useBoardStore((s) => s.selectedIds);
+  const activeBreakpointId = useBoardStore((s) => s.activeBreakpointId);
+  const clipboard = useBoardStore((s) => s.regionSettingsClipboard);
+  const copy = useBoardStore((s) => s.copyRegionSettings);
+  const paste = useBoardStore((s) => s.pasteRegionSettings);
+  const regionName = (id: string | undefined) =>
+    board.breakpoints.find((bp) => bp.id === id)?.name ?? "All zoom levels";
+  const copiedIds = clipboard
+    ? Object.keys(clipboard.states).filter((id) => board.elements.some((el) => el.id === id))
+    : [];
+  const selectedCopied = selectedIds.filter((id) => copiedIds.includes(id));
+  const pasteCount = selectedCopied.length || copiedIds.length;
+  return (
+    <div className="region-property-context">
+      <div>Editing <strong>{regionName(activeBreakpointId)}</strong></div>
+      <div className="texture-actions region-settings-actions">
+        <button
+          type="button"
+          className="region-property-btn"
+          disabled={!selectedIds.length}
+          title="Copy the selected objects' settings in this region (Ctrl+Alt+C)"
+          onClick={copy}
+        >
+          Copy settings
+        </button>
+        <button
+          type="button"
+          className="region-property-btn"
+          disabled={!pasteCount}
+          title={`Paste copied settings into this region${pasteCount ? ` for ${pasteCount} object${pasteCount === 1 ? "" : "s"}` : ""} (Ctrl+Alt+V)`}
+          onClick={paste}
+        >
+          Paste settings
+        </button>
+      </div>
+      {clipboard && copiedIds.length > 0 && (
+        <div className="region-property-hint">
+          {copiedIds.length} object{copiedIds.length === 1 ? "" : "s"} copied from {regionName(clipboard.sourceRegionId)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PropsPanel() {
   const {
     board, selectedIds, activeBreakpointId,
@@ -692,6 +738,7 @@ export default function PropsPanel() {
     return (
       <div className="props-panel">
         <div className="panel-header"><span>Properties</span></div>
+        {multi && <RegionSettingsBar />}
         {multi ? (
           <div className="props-scroll">
             <div className="prop-section-title">{selectedIds.length} elements selected</div>
@@ -730,9 +777,7 @@ export default function PropsPanel() {
         <span className="panel-el-name">{el.name}</span>
       </div>
 
-      <div className="region-property-context">
-        Editing current zoom region
-      </div>
+      <RegionSettingsBar />
 
       <div className="props-scroll">
         <StateEditor
