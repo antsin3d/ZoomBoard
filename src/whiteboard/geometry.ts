@@ -2,8 +2,8 @@ import {
   BASE_KEYFRAME_ID,
   BASE_ZOOM,
   normalizeConnectorStyle,
+  presentationState,
   resolveState,
-  resolveStateDirect,
   type Board,
   type BoardElement,
   type ConnectorAnchor,
@@ -115,8 +115,10 @@ export function zoomForPresentation(board: Board, key: string): number {
     : board.breakpoints.find((bp) => bp.id === key)?.zoom ?? BASE_ZOOM;
 }
 
-export function stateForPresentation(board: Board, element: BoardElement, key: string): ElementState {
-  return resolveStateDirect(element, zoomForPresentation(board, key), board.breakpoints);
+export function stateForPresentation(_board: Board, element: BoardElement, key: string): ElementState {
+  // A presentation ID is authoritative: 1x can now lie in any region,
+  // and looking up the baseline by zoom would accidentally select that region.
+  return presentationState(element, key);
 }
 
 export function worldPositionForPresentation(

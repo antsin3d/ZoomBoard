@@ -317,6 +317,10 @@ export default function ConnectorNode({
   };
 
   const commitPreview = (end: "start" | "end", node: Konva.Circle) => {
+    if (node.getStage()?.getAttr("cancellingInteraction")) {
+      setPreview(null);
+      return;
+    }
     const world = { x: frameWorld.x + node.x(), y: frameWorld.y + node.y() };
     setPreview(null);
     node.position(end === "start" ? { x: startLX, y: startLY } : { x: endLX, y: endLY });
@@ -347,7 +351,8 @@ export default function ConnectorNode({
       }}
       onDblClick={(e) => {
         e.cancelBubble = true;
-        onSelect(element.id, e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey);
+        if (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey) onSelect(element.id, true);
+        else useBoardStore.getState().editElementText(element.id);
       }}
       onDragStart={(e) => {
         if (e.target !== groupRef.current) return;
@@ -438,6 +443,7 @@ export default function ConnectorNode({
             const target = e.target as Konva.Group;
             if (target === groupRef.current) return;
             e.cancelBubble = true;
+            if (target.getStage()?.getAttr("cancellingInteraction")) return;
             const dropX = target.x();
             const dropY = target.y();
             let bestT = labelT;

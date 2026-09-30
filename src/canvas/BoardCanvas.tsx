@@ -8,24 +8,24 @@ import { followPeer, publishCursor, publishViewport, useSessionStore } from "../
 import PresenceOverlay from "../collaboration/PresenceOverlay";
 import {
   BASE_KEYFRAME_ID,
-  resolveState,
   type ElementState,
   type BoardElement,
   type ElementType,
+  type ShapeType,
   type ToolMode,
 } from "../whiteboard/model";
 import ElementNode from "./ElementNode";
 import ConnectorNode from "./ConnectorNode";
+import DrawPreview from "./DrawPreview";
+import { createDragPreview, dragPreviewPositions, dragSelection, resolveLiveConnectorState, type DragPreview } from "./dragPreview";
 import {
   canvasDropTargetAt,
   clearLivePositions,
-  effectiveSelectionRoots,
   findAttachTargetAt,
   isCanvasDropTarget,
   isContainer,
   outermostGroupAncestor,
   rendersAsContainer,
-  resolveConnectorState,
   setLivePosition,
   shapeOutlineWorld,
   withLiveState,
@@ -38,6 +38,9 @@ const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 8;
 const BBOX_PAD = 8;
 const DEFAULT_STICKY_SIZE = 180;
+const DEFAULT_TEXT_WIDTH = 240;
+const DEFAULT_TEXT_HEIGHT = 60;
+const SHAPE_TOOLS = new Set<ShapeType>(["rect", "ellipse", "triangle", "diamond", "hexagon", "star"]);
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
@@ -49,6 +52,10 @@ function screenToWorld(sx: number, sy: number, panX: number, panY: number, zoom:
 
 function toolToElementType(tool: ToolMode): ElementType | null {
   return tool === "select" ? null : tool;
+}
+
+function isShapeTool(tool: ToolMode): tool is ShapeType {
+  return SHAPE_TOOLS.has(tool as ShapeType);
 }
 
 // ─── GroupNode ────────────────────────────────────────────────────────────────
@@ -389,7 +396,9 @@ function GroupHitNode({
         }}
         onDblClick={(event) => {
           event.cancelBubble = true;
-          onSelect(group.id, event.evt.shiftKey || event.evt.ctrlKey || event.evt.metaKey);
+          const modified = event.evt.shiftKey || event.evt.ctrlKey || event.evt.metaKey;
+          if (modified || group.type === "group") onSelect(group.id, modified);
+          else useBoardStore.getState().editElementText(group.id);
         }}
         onTap={(event) => {
           event.cancelBubble = true;
@@ -448,6 +457,9 @@ export default function BoardCanvas() {
   const [marqueeDrag, setMarqueeDrag] = useState<MarqueeState | null>(null);
   const [connectorDraft, setConnectorDraft] = useState<ConnectorDraft | null>(null);
   const [interactionEpoch, setInteractionEpoch] = useState(0);
+  const lastCreatedShapeRef = useRef<{ id: string; type: ShapeType } | null>(null);
+  const dragPreviewRef = useRef<DragPreview | null>(null);
+  const cancellingDragRef = useRef(false);
 
   const spaceHeld = useRef(false);
   const isPanning = useRef(false);
@@ -458,7 +470,7 @@ export default function BoardCanvas() {
   // Set when a connector draw commits, to swallow the shape click that follows mouse-up.
   const suppressClickRef = useRef(false);
   // rAF-throttled re-render tick for live connector tracking during drags.
-  const [, setLiveTick] = useState(0);
+  const [liveTick, setLiveTick] = useState(0);
   const liveRafRef = useRef(0);
 
   const scheduleLiveTick = useCallback(() => {
@@ -471,6 +483,7 @@ export default function BoardCanvas() {
 
   useEffect(() => () => {
     if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
+    clearLivePositions();
   }, []);
 
   const {
@@ -484,6 +497,10 @@ export default function BoardCanvas() {
   const tool = editable ? chosenTool : "select";
 
   useEffect(() => {
+    lastCreatedShapeRef.current = null;
+  }, [chosenTool]);
+
+  useEffect(() => {
     if (!followingId || followX === undefined || followY === undefined || followZoom === undefined) return;
     const nextZoom = clamp(followZoom, MIN_ZOOM, MAX_ZOOM);
     setZoom(nextZoom);
@@ -495,17 +512,46 @@ export default function BoardCanvas() {
     publishViewport({ x: (size.w / 2 - panX) / zoom, y: (size.h / 2 - panY) / zoom, zoom });
   }, [zoom, panX, panY, size.w, size.h, followingId, role, status]);
 
-  useEffect(() => {
-    if (editable) return;
+  const cancelInteractions = useCallback(() => {
+    cancellingDragRef.current = true;
+    dragPreviewRef.current = null;
     setDrawDrag(null);
     setConnectorDraft(null);
+    setMarqueeDrag(null);
+    isPanning.current = false;
     clearLivePositions();
-    for (const node of nodeMapRef.current.values()) node.stopDrag();
+    if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
+    liveRafRef.current = 0;
+    // Include the separate container hit tree, not just registered visual nodes.
+    stageRef.current?.setAttr("cancellingInteraction", true);
+    stageRef.current?.find((node: Konva.Node) => node.isDragging()).forEach((node) => node.stopDrag());
     transformerRef.current?.stopTransform();
-    // Konva transforms are imperative. Recreate the hit tree when permission is
-    // revoked so an interrupted drag/resize cannot leave unsaved geometry behind.
+    dropTargetIdRef.current = null;
+    dropHighlightRef.current?.visible(false);
+    // Konva transforms are imperative. Recreate both trees after cancellation
+    // so an interrupted drag/resize cannot leave unsaved geometry behind.
     setInteractionEpoch((value) => value + 1);
-  }, [editable]);
+    cancellingDragRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (!editable) cancelInteractions();
+  }, [editable, cancelInteractions]);
+
+  useEffect(() => {
+    const onCancel = () => cancelInteractions();
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") cancelInteractions();
+    };
+    window.addEventListener("keydown", onEscape);
+    window.addEventListener("blur", onCancel);
+    window.addEventListener("pointercancel", onCancel);
+    return () => {
+      window.removeEventListener("keydown", onEscape);
+      window.removeEventListener("blur", onCancel);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+  }, [cancelInteractions]);
 
   const handleSelect = useCallback((id: string, addToSelection?: boolean) => {
     if (suppressClickRef.current) {
@@ -518,14 +564,15 @@ export default function BoardCanvas() {
   const resolveCanvasElement = useCallback((id: string): ElementState | null => {
     const element = board.elements.find((candidate) => candidate.id === id);
     if (!element) return null;
-    const state = element.type === "connector"
-      ? resolveConnectorState(board, element, zoom)
-      : resolve(id);
+    // Connector frames are derived from endpoints. Applying a live position
+    // after routing would detach attached ends and misplace floating hulls.
+    if (element.type === "connector") return resolveLiveConnectorState(board, element, zoom);
+    const state = resolve(id);
     if (!state) return null;
     // In-flight drag position: keeps the dragged node under the pointer and
     // lets attached connectors track it instead of waiting for drop.
     return withLiveState(state, id);
-  }, [board, resolve, zoom]);
+  }, [board, resolve, zoom, liveTick]);
 
   useEffect(() => {
     const wrapper = wrapperRef.current;
@@ -645,7 +692,6 @@ export default function BoardCanvas() {
   }, [marqueeDrag, connectorDraft, drawDrag, panX, panY, zoom, setPan]);
 
   const handleMouseUp = useCallback(() => {
-    clearLivePositions();
     if (isPanning.current) {
       isPanning.current = false;
       const stage = stageRef.current;
@@ -727,7 +773,41 @@ export default function BoardCanvas() {
       const w = Math.abs(drawDrag.currentX - drawDrag.startX);
       const h = Math.abs(drawDrag.currentY - drawDrag.startY);
       const elementType = toolToElementType(tool);
-      if (elementType === "sticky" && (w <= 4 || h <= 4)) {
+      const isClick = w <= 4 || h <= 4;
+      if (isShapeTool(tool) && isClick) {
+        const current = useBoardStore.getState();
+        const template = lastCreatedShapeRef.current?.type === tool
+          ? current.board.elements.find((element) => (
+              element.id === lastCreatedShapeRef.current?.id && element.type === tool
+            ))
+          : undefined;
+        if (template) {
+          const bounds = worldBoundsAtZoom(current.board, template, current.zoom);
+          current.setSelectedIds([template.id]);
+          current.duplicateSelected(
+            drawDrag.startX - (bounds.x + bounds.width / 2),
+            drawDrag.startY - (bounds.y + bounds.height / 2),
+          );
+          const duplicateId = useBoardStore.getState().selectedIds[0];
+          if (duplicateId) lastCreatedShapeRef.current = { id: duplicateId, type: tool };
+        } else {
+          const side = Math.min(size.w, size.h) * 0.2 / zoom;
+          const id = addElement(tool, {
+            x: drawDrag.startX - side / 2,
+            y: drawDrag.startY - side / 2,
+            width: side,
+            height: side,
+          });
+          lastCreatedShapeRef.current = { id, type: tool };
+        }
+      } else if (elementType === "text" && isClick) {
+        addElement("text", {
+          x: drawDrag.startX,
+          y: drawDrag.startY,
+          width: DEFAULT_TEXT_WIDTH,
+          height: DEFAULT_TEXT_HEIGHT,
+        });
+      } else if (elementType === "sticky" && isClick) {
         addElement("sticky", {
           x: drawDrag.startX - DEFAULT_STICKY_SIZE / 2,
           y: drawDrag.startY - DEFAULT_STICKY_SIZE / 2,
@@ -738,14 +818,15 @@ export default function BoardCanvas() {
         if (elementType === "frame") {
           createFrame({ x, y, width: w, height: h });
         } else {
-          addElement(elementType, { x, y, width: w, height: h } as Partial<ElementState>);
+          const id = addElement(elementType, { x, y, width: w, height: h } as Partial<ElementState>);
+          if (isShapeTool(tool)) lastCreatedShapeRef.current = { id, type: tool };
         }
       }
       setDrawDrag(null);
     }
   }, [
     marqueeDrag, connectorDraft, drawDrag, tool, board.elements, resolveCanvasElement,
-    setSelectedIds, addElement, createFrame,
+    setSelectedIds, addElement, createFrame, size.w, size.h, zoom,
   ]);
 
   // The elements a drag started on `id` actually moves, and the frame the
@@ -754,15 +835,7 @@ export default function BoardCanvas() {
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
     const { board: b, zoom: z, panX: px, panY: py, selectedIds: sids } = useBoardStore.getState();
-    const element = b.elements.find((candidate) => candidate.id === id);
-    const movesSelection =
-      !!element
-      && sids.includes(id)
-      && sids.length > 1
-      && !(element.parentId && sids.includes(element.parentId));
-    const roots = movesSelection
-      ? effectiveSelectionRoots(b, sids)
-      : element ? [element] : [];
+    const { roots, movesSelection } = dragPreviewRef.current ?? dragSelection(b, sids, id);
     if (!pointer) return { roots, movesSelection, targetId: null as string | null, known: false };
     const world = screenToWorld(pointer.x, pointer.y, px, py, z);
     const target = canvasDropTargetAt(b, world, z, roots.map((root) => root.id));
@@ -796,9 +869,18 @@ export default function BoardCanvas() {
   // Live drag feedback: publish the in-flight position so attached
   // connectors track the node, and highlight the frame under the pointer.
   const handleDragProgress = useCallback((id: string, x?: number, y?: number) => {
-    if (!canEditBoard()) return;
+    if (cancellingDragRef.current || !canEditBoard()) return;
     if (x !== undefined && y !== undefined) {
-      setLivePosition(id, { x, y });
+      const current = useBoardStore.getState();
+      const drag = dragPreviewRef.current ?? createDragPreview(current.board, current.selectedIds, id, current.zoom);
+      if (!drag) return;
+      dragPreviewRef.current = drag;
+      clearLivePositions();
+      // Only effective roots receive a local offset. Their descendants follow
+      // through the visual/hit parent trees and geometry's world-position lookup.
+      for (const [rootId, position] of dragPreviewPositions(drag, { x, y })) {
+        setLivePosition(rootId, position);
+      }
       scheduleLiveTick();
     }
     const { roots, targetId } = resolveDrop(id);
@@ -809,27 +891,48 @@ export default function BoardCanvas() {
 
   // Element / group drag end — handles multi-select too.
   const handleDragEnd = useCallback((id: string, newX: number, newY: number) => {
-    clearLivePositions();
-    if (!canEditBoard()) return;
+    if (cancellingDragRef.current) return;
     if (liveRafRef.current) {
       cancelAnimationFrame(liveRafRef.current);
       liveRafRef.current = 0;
     }
-    const { board: b, zoom: z, activeBreakpointId: abpId } = useBoardStore.getState();
+    const currentStore = useBoardStore.getState();
+    const { board: b, zoom: z, activeBreakpointId: abpId, selectedIds: sids } = currentStore;
     const kfId = abpId ?? BASE_KEYFRAME_ID;
     const el = b.elements.find((element) => element.id === id);
+    const drag = dragPreviewRef.current;
     const drop = resolveDrop(id);
+    clearLivePositions();
+    dragPreviewRef.current = null;
+    scheduleLiveTick();
     paintDropHighlight(null);
+    if (!canEditBoard()) {
+      cancelInteractions();
+      return;
+    }
     if (!el) return;
+    const baseline = drag ?? createDragPreview(b, sids, id, z);
+    if (!baseline) return;
+    const dx = newX - baseline.origin.x;
+    const dy = newY - baseline.origin.y;
 
     if (drop.movesSelection) {
-      const resolved = resolveState(el, z, b.breakpoints);
-      moveSelectedBy(newX - resolved.x, newY - resolved.y);
+      // Normalize deep selections too: store movement historically skips only
+      // immediate selected parents. Preserve the user's selection after commit.
+      const rootIds = drop.roots.map((root) => root.id);
+      const normalize = rootIds.length !== sids.length || rootIds.some((rootId, index) => rootId !== sids[index]);
+      if (normalize) setSelectedIds(rootIds);
+      try {
+        moveSelectedBy(dx, dy);
+      } finally {
+        if (normalize) setSelectedIds(sids);
+      }
     } else {
       // A dragged child wins over a simultaneously-selected parent: moving the
       // parent here would teleport the whole hierarchy by the child's
       // local-coordinate delta.
-      setKeyframe(id, kfId, { x: newX, y: newY });
+      const start = baseline.positions.get(id)!;
+      setKeyframe(id, kfId, { x: start.x + dx, y: start.y + dy });
     }
 
     if (!drop.known) return;
@@ -848,7 +951,7 @@ export default function BoardCanvas() {
       return parent ? isCanvasDropTarget(parent) : false;
     });
     if (released.length) reparentElements(released.map((root) => root.id), null, false);
-  }, [moveSelectedBy, paintDropHighlight, reparentElements, resolveDrop, setKeyframe]);
+  }, [cancelInteractions, moveSelectedBy, paintDropHighlight, reparentElements, resolveDrop, scheduleLiveTick, setKeyframe, setSelectedIds]);
 
   const handleAltDragStart = useCallback((id: string) => {
     if (!canEditBoard()) return;
@@ -909,7 +1012,7 @@ export default function BoardCanvas() {
   // When a transform ends, convert Konva's scale+position back to our top-left
   // coordinate convention (same as the center-pivot dragEnd conversion).
   const handleTransformEnd = useCallback(() => {
-    if (!canEditBoard()) return;
+    if (cancellingDragRef.current || !canEditBoard()) return;
     const { selectedIds: sids, activeBreakpointId } = useBoardStore.getState();
     if (sids.length !== 1) return;
     const node = nodeMapRef.current.get(sids[0]);
@@ -1017,13 +1120,6 @@ export default function BoardCanvas() {
     setTool, setSelectedIds, groupSelected, ungroup,
     undo, redo, copySelected, pasteClipboard, duplicateSelected, connectSelected,
   ]);
-
-  const previewRect = drawDrag ? {
-    x: Math.min(drawDrag.startX, drawDrag.currentX),
-    y: Math.min(drawDrag.startY, drawDrag.currentY),
-    w: Math.abs(drawDrag.currentX - drawDrag.startX),
-    h: Math.abs(drawDrag.currentY - drawDrag.startY),
-  } : null;
 
   const marqueeRect = marqueeDrag ? {
     x: Math.min(marqueeDrag.startX, marqueeDrag.curX),
@@ -1233,21 +1329,12 @@ export default function BoardCanvas() {
         })()}
 
         {/* Draw-tool preview */}
-        {previewRect && (
-          <KonvaRect
-            x={previewRect.x} y={previewRect.y}
-            width={previewRect.w} height={previewRect.h}
-            fill={
-              tool === "sticky"
-                ? "rgba(255,243,163,0.65)"
-                : tool === "frame"
-                  ? "transparent"
-                  : "rgba(45,140,240,0.08)"
-            }
-            stroke="#2d8cf0"
-            strokeWidth={1.5 / zoom}
-            dash={[6 / zoom, 4 / zoom]}
-            listening={false}
+        {drawDrag && tool !== "select" && (
+          <DrawPreview
+            type={tool}
+            start={{ x: drawDrag.startX, y: drawDrag.startY }}
+            end={{ x: drawDrag.currentX, y: drawDrag.currentY }}
+            zoom={zoom}
           />
         )}
 

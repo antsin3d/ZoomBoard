@@ -1,0 +1,84 @@
+.props-panel .region-property-context {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel-border);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.props-panel .region-customization-dot,
+.props-panel .region-customization-placeholder {
+  display: inline-block;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 22px;
+}
+
+.props-panel .region-customization-dot {
+  position: relative;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.props-panel .region-customization-dot::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d49b19;
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.props-panel .region-customization-dot:hover {
+  background: #d49b191a;
+}
+
+.props-panel .region-customization-dot:focus-visible {
+  outline: 2px solid #d49b19;
+  outline-offset: 1px;
+}
+
+.props-panel .region-property-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: #f8f9fa;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.props-panel .region-property-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.props-panel .region-property-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.props-panel .region-property-btn-danger {
+  padding: 0 8px;
+  color: var(--muted);
+}
+
+.props-panel .region-property-btn-danger:hover {
+  border-color: var(--danger);
+  background: #fee2e2;
+  color: var(--danger);
+}
+
+.props-panel .region-property-hint {
+  padding: 2px 4px 6px;
+  color: var(--muted);
+  font-size: 10px;
+}

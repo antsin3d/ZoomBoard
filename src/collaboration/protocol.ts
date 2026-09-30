@@ -2,6 +2,7 @@ import {
   BASE_KEYFRAME_ID, DEFAULT_STATE,
   type Board, type BoardElement, type Breakpoint, type ElementState,
 } from "../whiteboard/model";
+import { validateRegionTimeline } from "../whiteboard/regions";
 
 export const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_ELEMENTS = 10_000;
@@ -250,12 +251,17 @@ function state(value: unknown, partial: boolean): Partial<ElementState> {
 }
 function breakpoint(value: unknown): Breakpoint {
   const input = record(value);
-  keys(input, ["id", "zoom", "name", "transition", "transitionRange"]);
+  keys(input, ["id", "zoom", "name", "transition", "transitionRange", "region", "tweenIn", "tweenOut"]);
   const bpId = id(input.id);
   if (bpId === BASE_KEYFRAME_ID) fail("Reserved breakpoint ID.");
+  if (input.region !== undefined && input.region !== true) fail("Invalid region flag.");
   return { id: bpId, zoom: number(input.zoom, 0.000001, 1e6), name: text(input.name),
     transition: enumValue(input.transition, ["snap", "crossfade"]),
-    transitionRange: input.transitionRange === undefined ? 0 : number(input.transitionRange, 0, 100) };
+    transitionRange: input.transitionRange === undefined ? 0 : number(input.transitionRange, 0, 100),
+    ...(input.region === true ? { region: true as const } : {}),
+    ...(input.tweenIn !== undefined ? { tweenIn: number(input.tweenIn, 0, 16) } : {}),
+    ...(input.tweenOut !== undefined ? { tweenOut: number(input.tweenOut, 0, 16) } : {}),
+  };
 }
 function element(value: unknown): BoardElement {
   const input = record(value);
@@ -307,6 +313,7 @@ export function validateBoard(value: unknown): Board {
     elements: array(input.elements, MAX_ELEMENTS).map(element),
   };
   unique(result.breakpoints.map((bp) => bp.id));
+  validateRegionTimeline(result.breakpoints);
   unique(result.elements.map((el) => el.id));
   const elements = new Map(result.elements.map((el) => [el.id, el]));
   for (const el of result.elements) {

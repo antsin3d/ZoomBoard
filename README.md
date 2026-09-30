@@ -5,7 +5,7 @@ Miro-like design and interaction, plus a feature Miro never shipped:
 
 https://github.com/antsin3d/ZoomBoard/blob/master/release/Whiteboard.exe
 
-### Zoom Breakpoints
+### Zoom Regions
 
 Control how content appears at different zoom levels — *responsive design on the
 zoom axis*. Explore a data hierarchy by zooming through levels of abstraction
@@ -17,7 +17,8 @@ zoom axis*. Explore a data hierarchy by zooming through levels of abstraction
 
 🚧 Working prototype. Implemented:
 
-- Zoom breakpoints / tiers, per-tier properties, LOD variants, and transitions
+- Zoom regions with cut-to-split editing, adjustable dividers, and automatic tweens
+- Direct region-specific object properties with gold customization indicators
 - Shapes, text, sticky notes, frames, connectors, groups, embedded images
 - Layers, props, zoom timeline, undo/redo, align, open/save `.board` files
 - **Remote collaboration (preview):** host-owned peer sessions with invite
@@ -45,7 +46,7 @@ third-party public PeerJS signaling and STUN; see the collaboration docs.
 ```bash
 pnpm install
 pnpm dev          # canvas in a browser
-pnpm test         # protocol / session / framing tests
+pnpm test         # region / canvas / document / collaboration tests
 pnpm build        # TypeScript check + production frontend
 ```
 
@@ -70,6 +71,33 @@ Browser development uses file upload/download as a fallback.
 
 After you host a session the first time (or rotate an invite), **Save** again so
 the reusable invite identity is stored in that board file.
+
+## Editing zoom regions
+
+- A new board starts with one region spanning the whole zoom range.
+- Scrub the timeline ruler to preview a zoom level, then **+ New Region** to split
+  there. Both sides initially look identical; selecting a region lets you change
+  its object properties independently. Splitting too close to an existing tween
+  is disabled to preserve that animation; narrow the tween or move farther away.
+- Drag a region divider to change where the appearance switches. A tween is
+  added automatically at each cut; drag its left and right edges to shorten
+  the blend for a faster change or widen it for a slower change.
+- The properties panel follows the current region—there are no breakpoint
+  tabs or variant controls. Gold dots mark properties customized from the
+  object's original values; click a dot to reset that property.
+- Shift+click adjacent regions to select a run, then click **Merge** to combine
+  them into the leftmost region's appearance (Escape clears the selection).
+  Splits, property edits, merges, and divider/tween drags support undo/redo.
+- Double-click a shape to select it and jump straight into its text field.
+
+Existing local `.board` files are upgraded when opened: their zoom-level
+appearances and assigned variants become region properties. Save to retain
+the upgraded timeline in the version-2 file format; older builds will reject
+these files rather than display incorrect appearances. Use the same app version for collaboration with
+region-based boards; older versions do not understand the new region metadata.
+
+Canvas feedback also previews the full selected set while dragging, and shape
+creation shows the actual ellipse or polygon silhouette as you draw.
 
 ## Remote collaboration (preview)
 

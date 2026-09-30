@@ -1,9 +1,10 @@
 import * as Y from "yjs";
-import { DEFAULT_STATE, type Board } from "./model";
+import { DEFAULT_STATE, isRegionTimeline, type Board } from "./model";
+import { validateRegionTimeline } from "./regions";
 import { createIdentity, signChallenge, verifyChallenge, validateBoard, validateHostIdentity, type HostIdentity } from "../collaboration/protocol";
 
 const DOCUMENT_FORMAT = "ai.univrs.whiteboard";
-const DOCUMENT_VERSION = 1;
+const DOCUMENT_VERSION = 2;
 const BOARD_KEY = "board";
 const DOCUMENT_MAP = "document";
 const LOCAL_ORIGIN = Symbol("whiteboard-local");
@@ -17,7 +18,7 @@ let verifiedIdentity: HostIdentity | undefined;
 
 interface BoardFileEnvelope {
   format: typeof DOCUMENT_FORMAT;
-  version: typeof DOCUMENT_VERSION;
+  version: 1 | typeof DOCUMENT_VERSION;
   yjsUpdate: string;
   collaboration?: HostIdentity;
 }
@@ -106,11 +107,13 @@ function validateFileStructure(board: Board): void {
   const breakpointIds = new Set<string>();
   for (const bp of board.breakpoints) {
     if (!isObject(bp) || !isId(bp.id) || breakpointIds.has(bp.id) ||
+      Object.keys(bp).some((key) => !["id", "zoom", "name", "transition", "transitionRange", "region", "tweenIn", "tweenOut"].includes(key)) ||
       typeof bp.zoom !== "number" || bp.zoom <= 0 || typeof bp.name !== "string" ||
       !["snap", "crossfade"].includes(bp.transition) ||
       (bp.transitionRange !== undefined && (typeof bp.transitionRange !== "number" || bp.transitionRange < 0))) invalid();
     breakpointIds.add(bp.id);
   }
+  validateRegionTimeline(board.breakpoints);
   const elements = new Map<string, Board["elements"][number]>();
   for (const el of board.elements) {
     if (!isObject(el) || !isId(el.id) || elements.has(el.id) || typeof el.name !== "string" ||
@@ -261,7 +264,7 @@ export function serializeBoard(board: Board): string {
 
   const envelope: BoardFileEnvelope = {
     format: DOCUMENT_FORMAT,
-    version: DOCUMENT_VERSION,
+    version: isRegionTimeline(board.breakpoints) ? DOCUMENT_VERSION : 1,
     yjsUpdate: bytesToBase64(Y.encodeStateAsUpdate(liveDoc)),
     ...(hostIdentity ? { collaboration: getHostIdentity() } : {}),
   };
@@ -276,7 +279,7 @@ export function serializeBoardCopy(board: Board): string {
   try {
     doc.getMap<string>(DOCUMENT_MAP).set(BOARD_KEY, JSON.stringify(snapshot));
     const envelope: BoardFileEnvelope = {
-      format: DOCUMENT_FORMAT, version: DOCUMENT_VERSION,
+      format: DOCUMENT_FORMAT, version: isRegionTimeline(snapshot.breakpoints) ? DOCUMENT_VERSION : 1,
       yjsUpdate: bytesToBase64(Y.encodeStateAsUpdate(doc)),
     };
     return JSON.stringify(envelope);
@@ -300,7 +303,7 @@ export function deserializeBoard(contents: string): Board {
   if (file.format !== DOCUMENT_FORMAT) {
     throw new Error("This file is not a Whiteboard document.");
   }
-  if (file.version !== DOCUMENT_VERSION) {
+  if (file.version !== 1 && file.version !== DOCUMENT_VERSION) {
     throw new Error(`Unsupported Whiteboard document version: ${String(file.version)}.`);
   }
   if (typeof file.yjsUpdate !== "string") {

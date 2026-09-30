@@ -225,7 +225,8 @@ export default function ElementNode({
       }}
       onDblClick={(e) => {
         e.cancelBubble = true;
-        onSelect(element.id, e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey);
+        if (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey) onSelect(element.id, true);
+        else useBoardStore.getState().editElementText(element.id);
       }}
       onTap={(e) => {
         e.cancelBubble = true;

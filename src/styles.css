@@ -34,7 +34,7 @@ html, body, #root {
   grid-template:
     "toolbar  toolbar   toolbar"  44px
     "layers   canvas    props"    1fr
-    "layers   timeline  props"    52px
+    "layers   timeline  props"    128px
     / 220px   1fr       240px;
   overflow: hidden;
 }
@@ -84,13 +84,21 @@ html, body, #root {
 .tool-btn:disabled { opacity: 0.35; cursor: default; }
 .tool-active { background: var(--accent-dim) !important; border-color: var(--accent) !important; color: var(--accent) !important; }
 .tool-icon { width: 17px; height: 17px; fill: currentColor; }
-.shape-menu { position: relative; }
-.shape-menu-trigger { gap: 3px; }
+.shape-menu { position: relative; display: flex; }
+.shape-menu-primary { min-width: 29px; padding: 0 6px; border-radius: var(--radius) 0 0 var(--radius); }
+.shape-menu-toggle {
+  min-width: 17px;
+  width: 17px;
+  padding: 0;
+  margin-left: -1px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.shape-menu-toggle-open { background: var(--accent-dim); color: var(--accent); }
 .shape-menu-caret { font-size: 10px; color: var(--muted); transform: translateY(-1px); }
 .shape-menu-popover {
   position: absolute;
   z-index: 80;
-  top: 34px;
+  top: 32px;
   left: 0;
   width: 142px;
   padding: 5px;

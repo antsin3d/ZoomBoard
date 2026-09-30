@@ -1,16 +1,12 @@
-import { useState, useEffect, useRef, useMemo, type CSSProperties } from "react";
+import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
 import { useBoardStore } from "../whiteboard/store";
 import { pickImageFile } from "../whiteboard/fileIO";
 import {
   BASE_KEYFRAME_ID,
-  BASE_ZOOM,
+  DEFAULT_STATE,
   FONT_OPTIONS,
-  VARIANT_PATCH_KEYS,
-  activeVariant,
-  breakpointColor,
   normalizeConnectorStyle,
-  pickVariantPatch,
-  resolveStateDirect,
+  presentationState,
   type ConnectorAnchorSide,
   type ConnectorEndpointType,
   type ConnectorLineDash,
@@ -18,11 +14,50 @@ import {
   type BoardElement,
   type TextAlign,
   type TextVAlign,
-  type Breakpoint,
 } from "../whiteboard/model";
 import type { ArrangeMode } from "../whiteboard/geometry";
+import "./region-properties.css";
 
-const VARIANT_KEY_SET = new Set<keyof ElementState>(VARIANT_PATCH_KEYS);
+const PROPERTY_LABELS: Partial<Record<keyof ElementState, string>> = {
+  x: "X", y: "Y", width: "Width", height: "Height", rotation: "Rotation",
+  opacity: "Opacity", visible: "Visibility", fill: "Fill", stroke: "Stroke",
+  strokeWidth: "Stroke width", fillTextureSrc: "Fill texture", imageSrc: "Image source",
+  strokeTextureSrc: "Stroke texture", connectorStyle: "Route", connectorDash: "Line style",
+  connectorStartType: "Start type", connectorEndType: "End type",
+  connectorStartSize: "Start size", connectorEndSize: "End size",
+  connectorLabelPosition: "Label position", connectorLabelOffsetX: "Label X offset",
+  connectorLabelOffsetY: "Label Y offset", content: "Content", fontFamily: "Font",
+  fontSize: "Font size", textColor: "Text color", fontStyle: "Font style",
+  textDecoration: "Underline", lineHeight: "Line height",
+  textAlign: "Horizontal alignment", textVAlign: "Vertical alignment",
+};
+
+function CustomizationDot({
+  property, state, base, onReset,
+}: {
+  property: keyof ElementState;
+  state: ElementState;
+  base: ElementState;
+  onReset: (key: keyof ElementState) => void;
+}) {
+  const value = state[property] ?? DEFAULT_STATE[property];
+  const original = base[property] ?? DEFAULT_STATE[property];
+  const differs = property === "connectorStyle"
+    ? normalizeConnectorStyle(state.connectorStyle ?? DEFAULT_STATE.connectorStyle)
+      !== normalizeConnectorStyle(base.connectorStyle ?? DEFAULT_STATE.connectorStyle)
+    : !Object.is(value, original);
+  if (!differs) return <span className="region-customization-placeholder" aria-hidden="true" />;
+  const label = PROPERTY_LABELS[property] ?? property;
+  return (
+    <button
+      type="button"
+      className="region-customization-dot"
+      aria-label={`Reset ${label} customization`}
+      title={`${label} customized in this region. Reset to original value.`}
+      onClick={() => onReset(property)}
+    />
+  );
+}
 
 // ─── Small form controls ──────────────────────────────────────────────────────
 
@@ -135,11 +170,11 @@ function TextureField({
     <div className="prop-field texture-field">
       <span className="prop-label">{label}</span>
       <div className="texture-actions">
-        <button type="button" className="variant-btn" disabled={busy} onClick={() => void choose()}>
+        <button type="button" className="region-property-btn" disabled={busy} onClick={() => void choose()}>
           {value ? "Replace" : "Choose image"}
         </button>
         {value && (
-          <button type="button" className="variant-btn variant-btn-danger" onClick={() => onChange(undefined)}>
+          <button type="button" className="region-property-btn region-property-btn-danger" onClick={() => onChange(undefined)}>
             Clear
           </button>
         )}
@@ -230,11 +265,12 @@ const ANCHOR_SIDE_OPTIONS: { label: string; value: ConnectorAnchorSide }[] = [
 ];
 
 function ConnectorEndpointsEditor({
-  el, state, change,
+  el, state, change, customizationDot,
 }: {
   el: BoardElement;
   state: ElementState;
   change: (patch: Partial<ElementState>) => void;
+  customizationDot: (key: keyof ElementState) => ReactNode;
 }) {
   const board = useBoardStore((s) => s.board);
   const attachConnectorEnd = useBoardStore((s) => s.attachConnectorEnd);
@@ -253,12 +289,14 @@ function ConnectorEndpointsEditor({
     sizeKey: "connectorStartSize" | "connectorEndSize",
   ) => (
     <div className="prop-row">
+      {customizationDot(typeKey)}
       <SelectField
         label={end === "start" ? "Start" : "End"}
         value={type ?? "none"}
         options={ENDPOINT_OPTIONS}
         onChange={(v) => change({ [typeKey]: v } as Partial<ElementState>)}
       />
+      {customizationDot(sizeKey)}
       <NumField
         label="Size"
         value={size ?? 12}
@@ -282,7 +320,7 @@ function ConnectorEndpointsEditor({
           {targetId && (
             <button
               type="button"
-              className="variant-btn variant-btn-danger"
+              className="region-property-btn region-property-btn-danger"
               title="Detach into empty space (keeps its position)"
               onClick={() => attachConnectorEnd(el.id, end, null)}
             >
@@ -328,44 +366,19 @@ interface StateEditorProps {
   state: ElementState;
   presentationKey: string;
   onChangeKeyframe: (bpId: string, patch: Partial<ElementState>) => void;
-  onChangeVariant: (variantId: string, patch: Partial<ElementState>) => void;
+  onResetKey: (key: keyof ElementState) => void;
   autoFocusText?: boolean;
   onTextAutoFocused?: () => void;
 }
 
 function StateEditor({
-  el, state, presentationKey, onChangeKeyframe, onChangeVariant,
+  el, state, presentationKey, onChangeKeyframe, onResetKey,
   autoFocusText, onTextAutoFocused,
 }: StateEditorProps) {
-  const assignedVariant = activeVariant(el, presentationKey);
-
   const change = (patch: Partial<ElementState>) => {
-    // Spatial layout always writes to the presentation keyframe.
-    // When a variant is assigned, representation props edit that variant
-    // so the same representation can be reused across tiers.
-    if (assignedVariant) {
-      const variantPatch = pickVariantPatch(patch);
-      const layoutPatch: Partial<ElementState> = {};
-      for (const [key, value] of Object.entries(patch) as Array<[keyof ElementState, ElementState[keyof ElementState]]>) {
-        if (!VARIANT_KEY_SET.has(key)) {
-          (layoutPatch as Record<string, unknown>)[key] = value;
-        }
-      }
-      if (Object.keys(variantPatch).length > 0) {
-        onChangeVariant(assignedVariant.id, variantPatch);
-      }
-      if (Object.keys(layoutPatch).length > 0) {
-        onChangeKeyframe(presentationKey, layoutPatch);
-      }
-      return;
-    }
-    // Base tab writes to the virtual __base__ keyframe (same as canvas edits).
     onChangeKeyframe(presentationKey, patch);
   };
 
-  // Which keys have a keyframe override at this breakpoint?
-  const overrides: Partial<ElementState> = el.keyframes[presentationKey] ?? {};
-  const isOverridden = (key: keyof ElementState) => key in overrides;
   const isBold = state.fontStyle.includes("bold");
   const isItalic = state.fontStyle.includes("italic");
 
@@ -378,23 +391,11 @@ function StateEditor({
   };
 
   function OverrideDot({ k }: { k: keyof ElementState }) {
-    if (assignedVariant && VARIANT_KEY_SET.has(k) && k in assignedVariant.patch) {
-      return <span className="override-dot variant-dot" title={`From variant “${assignedVariant.name}”`} />;
-    }
-    return isOverridden(k)
-      ? <span className="override-dot" title="Overridden at this breakpoint" />
-      : <span className="override-dot-placeholder" />;
+    return <CustomizationDot property={k} state={state} base={el.base} onReset={onResetKey} />;
   }
 
   return (
-    <div
-      className="state-editor"
-      style={{
-        "--keyframe-color": presentationKey === BASE_KEYFRAME_ID
-          ? "var(--accent)"
-          : breakpointColor(useBoardStore.getState().board.breakpoints, presentationKey),
-      } as CSSProperties}
-    >
+    <div className="state-editor">
       <div className="prop-section-title">Transform</div>
       <div className="prop-row">
         <OverrideDot k="x" />
@@ -452,13 +453,14 @@ function StateEditor({
         <>
           <div className="prop-row texture-row">
             <OverrideDot k="fillTextureSrc" />
+            {el.type === "image" && <OverrideDot k="imageSrc" />}
             <TextureField
               label="Fill texture"
               value={state.fillTextureSrc ?? (el.type === "image" ? state.imageSrc : undefined)}
               onChange={(value) => change(
                 el.type === "image"
-                  ? { fillTextureSrc: value, imageSrc: value }
-                  : { fillTextureSrc: value },
+                  ? { fillTextureSrc: value ?? "", imageSrc: value ?? "" }
+                  : { fillTextureSrc: value ?? "" },
               )}
             />
           </div>
@@ -467,7 +469,7 @@ function StateEditor({
             <TextureField
               label="Stroke texture"
               value={state.strokeTextureSrc}
-              onChange={(value) => change({ strokeTextureSrc: value })}
+              onChange={(value) => change({ strokeTextureSrc: value ?? "" })}
             />
           </div>
         </>
@@ -505,7 +507,7 @@ function StateEditor({
               <div className="texture-actions">
                 <button
                   type="button"
-                  className="variant-btn"
+                  className="region-property-btn"
                   title="Swap start and end (attachments, anchors and arrowheads)"
                   onClick={() => useBoardStore.getState().flipConnector(el.id)}
                 >
@@ -515,7 +517,12 @@ function StateEditor({
             </div>
           </div>
           <div className="prop-section-title">Endpoints</div>
-          <ConnectorEndpointsEditor el={el} state={state} change={change} />
+          <ConnectorEndpointsEditor
+            el={el}
+            state={state}
+            change={change}
+            customizationDot={(key) => <OverrideDot k={key} />}
+          />
           <div className="prop-section-title">Label position</div>
           <div className="prop-row">
             <OverrideDot k="connectorLabelPosition" />
@@ -540,7 +547,7 @@ function StateEditor({
               step={1}
             />
           </div>
-          <div className="transition-hint">
+          <div className="region-property-hint">
             Drag the white handles to attach each end to any shape edge or drop it into empty space. Drag the label to slide it along the line. Type label text below — Fill controls its background (transparent = text only).
           </div>
         </>
@@ -619,13 +626,9 @@ function StateEditor({
       {el.type !== "connector" && (
       <div className="prop-row align-row">
         <OverrideDot k="textAlign" />
+        <OverrideDot k="textVAlign" />
         <div className="prop-field">
-          <span className="prop-label">
-            Position
-            {isOverridden("textVAlign") && !isOverridden("textAlign") && (
-              <span className="override-dot inline-dot" />
-            )}
-          </span>
+          <span className="prop-label">Position</span>
           <AlignGrid
             hAlign={state.textAlign}
             vAlign={state.textVAlign}
@@ -634,161 +637,6 @@ function StateEditor({
         </div>
       </div>
       )}
-    </div>
-  );
-}
-
-// ─── Variant controls ─────────────────────────────────────────────────────────
-
-function VariantControls({
-  el,
-  presentationKey,
-  tierLabel,
-}: {
-  el: BoardElement;
-  presentationKey: string;
-  tierLabel: string;
-}) {
-  const {
-    addVariant,
-    removeVariant,
-    renameVariant,
-    setVariantAssignment,
-    captureVariantFromPresentation,
-  } = useBoardStore();
-  const variants = el.variants ?? [];
-  const assignedId = el.variantAssignments?.[presentationKey] ?? "";
-
-  return (
-    <div className="variant-controls">
-      <div className="prop-section-title">Variants</div>
-      <div className="variant-list" role="listbox" aria-label={`Variants for ${tierLabel}`}>
-        <button
-          type="button"
-          role="option"
-          aria-selected={!assignedId}
-          className={`variant-row variant-choice${!assignedId ? " variant-row-active" : ""}`}
-          onClick={() => setVariantAssignment(el.id, presentationKey, null)}
-          title="Use this breakpoint's keyframe values without a reusable variant"
-        >
-          <span className="variant-choice-label">Use breakpoint styling</span>
-        </button>
-        {variants.map((variant) => (
-          <VariantNameRow
-            key={variant.id}
-            name={variant.name}
-            active={variant.id === assignedId}
-            onSelect={() => setVariantAssignment(el.id, presentationKey, variant.id)}
-            onRename={(name) => renameVariant(el.id, variant.id, name)}
-            onRemove={() => removeVariant(el.id, variant.id)}
-          />
-        ))}
-      </div>
-      <div className="variant-actions">
-        <button
-          type="button"
-          className="variant-btn"
-          onClick={() => {
-            const id = addVariant(el.id);
-            if (id) setVariantAssignment(el.id, presentationKey, id);
-          }}
-        >
-          + Variant
-        </button>
-        <button
-          type="button"
-          className="variant-btn"
-          onClick={() => captureVariantFromPresentation(el.id, presentationKey)}
-          title="Capture the current presentation as a new variant and assign it here"
-        >
-          Capture
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function VariantNameRow({
-  name, active, onSelect, onRename, onRemove,
-}: {
-  name: string;
-  active: boolean;
-  onSelect: () => void;
-  onRename: (name: string) => void;
-  onRemove: () => void;
-}) {
-  const [draft, setDraft] = useState(name);
-  useEffect(() => { setDraft(name); }, [name]);
-  const commit = () => {
-    const trimmed = draft.trim();
-    if (!trimmed || trimmed === name) {
-      setDraft(name);
-      return;
-    }
-    onRename(trimmed);
-  };
-  return (
-    <div
-      role="option"
-      aria-selected={active}
-      className={`variant-row${active ? " variant-row-active" : ""}`}
-      onClick={onSelect}
-    >
-      <input
-        className="prop-input variant-name-input"
-        value={draft}
-        onClick={(event) => {
-          event.stopPropagation();
-          onSelect();
-        }}
-        onFocus={onSelect}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") commit();
-          if (event.key === "Escape") setDraft(name);
-        }}
-      />
-      <button
-        type="button"
-        className="variant-btn variant-btn-danger"
-        title="Delete variant"
-        onClick={(event) => {
-          event.stopPropagation();
-          onRemove();
-        }}
-      >
-        ×
-      </button>
-    </div>
-  );
-}
-
-// ─── Transition range control ─────────────────────────────────────────────────
-
-function TransitionControls({ bp, onUpdate }: { bp: Breakpoint; onUpdate: (r: number) => void }) {
-  // Value is stored as a decimal zoom range (e.g. 0.05 = 5%).
-  // The UI presents and accepts whole percentages for clarity.
-  const pct = Math.round(bp.transitionRange * 100);
-  const halfPct = Math.round((bp.transitionRange / 2) * 100 * 10) / 10;
-  const centerPct = Math.round(bp.zoom * 100);
-  const hint = bp.transitionRange > 0
-    ? `Crossfade ±${halfPct}% of ${centerPct}% zoom`
-    : "Snap (no transition)";
-  return (
-    <div className="transition-controls">
-      <div className="prop-section-title">Transition</div>
-      <div className="prop-row">
-        <NumField
-          label="Duration (%)"
-          value={pct}
-          onChange={(v) => onUpdate(Math.max(0, Math.round(v)) / 100)}
-          min={0}
-          max={200}
-          step={1}
-        />
-      </div>
-      <div className="transition-hint">{hint}</div>
     </div>
   );
 }
@@ -810,7 +658,7 @@ const ARRANGE_ACTIONS: Array<{ mode: ArrangeMode; label: string; title: string; 
 export default function PropsPanel() {
   const {
     board, selectedIds, activeBreakpointId,
-    setKeyframe, updateBreakpoint, updateVariantPatch, alignSelected,
+    setKeyframe, clearKeyframeKey, alignSelected,
   } = useBoardStore();
 
   // Only show editor when exactly one element is selected.
@@ -826,7 +674,7 @@ export default function PropsPanel() {
       ? board.elements.find((element) => element.id === selectedId)
       : undefined;
     if (
-      selectedElement?.type === "sticky"
+      (selectedElement?.type === "text" || selectedElement?.type === "sticky")
       && !knownElementIds.current.has(selectedElement.id)
     ) {
       setTextFocusId(selectedElement.id);
@@ -834,38 +682,10 @@ export default function PropsPanel() {
     for (const element of board.elements) knownElementIds.current.add(element.id);
   }, [board.elements, selectedIds]);
 
-  // Tab order matches the timeline: below-base bps ascending, then Base, then above-base ascending.
-  const { belowBps, aboveBps } = useMemo(() => {
-    const sorted = [...board.breakpoints].sort((a, b) => a.zoom - b.zoom);
-    return {
-      belowBps: sorted.filter((bp) => bp.zoom < BASE_ZOOM),
-      aboveBps: sorted.filter((bp) => bp.zoom > BASE_ZOOM),
-    };
-  }, [board.breakpoints]);
-
-  const orderedBps = useMemo(() => [...belowBps, ...aboveBps], [belowBps, aboveBps]);
-
-  // Active breakpoint at current zoom.
-  const activeBp = useMemo(
-    () => board.breakpoints.find((bp) => bp.id === activeBreakpointId),
-    [activeBreakpointId, board.breakpoints],
-  );
-
-  // Tab = "base" or a breakpoint id. Follows the active breakpoint on zoom changes.
-  const [tab, setTab] = useState<string>(activeBp?.id ?? "base");
-  const prevActiveBpId = useRef(activeBp?.id);
+  const textEditRequest = useBoardStore((s) => s.textEditRequest);
   useEffect(() => {
-    if (prevActiveBpId.current !== activeBp?.id) {
-      prevActiveBpId.current = activeBp?.id;
-      setTab(activeBp?.id ?? "base");
-    }
-  }, [activeBp]);
-
-  // Reset tab when selected element changes.
-  useEffect(() => {
-    setTab(activeBp?.id ?? "base");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIds]);
+    if (textEditRequest) setTextFocusId(textEditRequest.id);
+  }, [textEditRequest]);
 
   if (!el) {
     const multi = selectedIds.length > 1;
@@ -890,7 +710,7 @@ export default function PropsPanel() {
                 </button>
               ))}
             </div>
-            <div className="transition-hint">Ctrl+G to create an invisible frame.</div>
+            <div className="region-property-hint">Ctrl+G to create an invisible frame.</div>
           </div>
         ) : (
           <div className="props-empty">Select an element to edit its properties.</div>
@@ -899,16 +719,9 @@ export default function PropsPanel() {
     );
   }
 
-  const tabBp = orderedBps.find((bp) => bp.id === tab);
-  const editingBase = tab === "base";
-
-  // State shown in the editor: use the non-interpolating resolver so the panel
-  // always reflects the actual stored keyframe values, not the blended canvas
-  // values that would be shown mid-transition. resolveState (with interpolation)
-  // is only appropriate for canvas rendering.
-  const editorState = editingBase
-    ? resolveStateDirect(el, BASE_ZOOM, board.breakpoints)
-    : resolveStateDirect(el, tabBp?.zoom ?? 1, board.breakpoints);
+  const regionKey = activeBreakpointId ?? BASE_KEYFRAME_ID;
+  // Resolve the current region directly; canvas interpolation is not editable state.
+  const editorState = presentationState(el, regionKey);
 
   return (
     <div className="props-panel">
@@ -917,68 +730,20 @@ export default function PropsPanel() {
         <span className="panel-el-name">{el.name}</span>
       </div>
 
-      {/* Tabs in timeline order: below-base bps | Base | above-base bps */}
-      <div className="props-tabs">
-        {belowBps.map((bp) => {
-          const hasKf = bp.id in el.keyframes || Boolean(el.variantAssignments?.[bp.id]);
-          return (
-            <button
-              key={bp.id}
-              className={`props-tab${tab === bp.id ? " props-tab-active" : ""}${hasKf ? " props-tab-has-kf" : ""}`}
-              style={{ "--keyframe-color": breakpointColor(board.breakpoints, bp.id) } as CSSProperties}
-              onClick={() => setTab(bp.id)}
-              title={`${Math.round(bp.zoom * 100)}%`}
-            >
-              {bp.name}
-            </button>
-          );
-        })}
-        <button
-          className={`props-tab${tab === "base" ? " props-tab-active" : ""}${el.variantAssignments?.[BASE_KEYFRAME_ID] ? " props-tab-has-kf" : ""}`}
-          onClick={() => setTab("base")}
-        >
-          Base
-        </button>
-        {aboveBps.map((bp) => {
-          const hasKf = bp.id in el.keyframes || Boolean(el.variantAssignments?.[bp.id]);
-          return (
-            <button
-              key={bp.id}
-              className={`props-tab${tab === bp.id ? " props-tab-active" : ""}${hasKf ? " props-tab-has-kf" : ""}`}
-              style={{ "--keyframe-color": breakpointColor(board.breakpoints, bp.id) } as CSSProperties}
-              onClick={() => setTab(bp.id)}
-              title={`${Math.round(bp.zoom * 100)}%`}
-            >
-              {bp.name}
-            </button>
-          );
-        })}
+      <div className="region-property-context">
+        Editing current zoom region
       </div>
 
       <div className="props-scroll">
-        <VariantControls
-          el={el}
-          presentationKey={editingBase ? BASE_KEYFRAME_ID : tab}
-          tierLabel={editingBase ? "Base" : (tabBp?.name ?? "this tier")}
-        />
-
         <StateEditor
           el={el}
           state={editorState}
-          presentationKey={editingBase ? BASE_KEYFRAME_ID : tab}
+          presentationKey={regionKey}
           onChangeKeyframe={(bpId, patch) => setKeyframe(el.id, bpId, patch)}
-          onChangeVariant={(variantId, patch) => updateVariantPatch(el.id, variantId, patch)}
+          onResetKey={(key) => clearKeyframeKey(el.id, regionKey, key)}
           autoFocusText={textFocusId === el.id}
           onTextAutoFocused={() => setTextFocusId(null)}
         />
-
-        {/* Transition controls at the bottom of breakpoint tabs (not Base) */}
-        {!editingBase && tabBp && (
-          <TransitionControls
-            bp={tabBp}
-            onUpdate={(r) => updateBreakpoint(tabBp.id, { transitionRange: r })}
-          />
-        )}
       </div>
     </div>
   );

@@ -40,12 +40,55 @@ export interface Breakpoint {
   zoom: number;
   name: string;
   transition: TransitionMode;
+  /** Region timelines use zoom as a start divider, without a special 1x anchor. */
+  region?: true;
+  /** Log2 zoom widths before/after this region's start divider. */
+  tweenIn?: number;
+  tweenOut?: number;
   /**
    * Relative transition duration as a fraction of this breakpoint's zoom
    * (e.g. 0.05 = ±2.5% of the marker zoom). Relative sizing keeps bands
    * visually consistent on the log-scaled timeline.
    */
   transitionRange: number;
+}
+
+export const MIN_REGION_ZOOM = 0.05;
+export const MAX_REGION_ZOOM = 8;
+export const DEFAULT_REGION_TWEEN = 0.12;
+
+export function isRegionTimeline(breakpoints: readonly Breakpoint[]): boolean {
+  return breakpoints.length > 0 && breakpoints.every((bp) => bp.region === true);
+}
+
+/** Tween windows meet at most at geometric midpoints, never overlap. */
+export function regionTweenBounds(
+  breakpoints: readonly Breakpoint[],
+  id: string,
+): { start: number; end: number } {
+  const sorted = [...breakpoints].sort((a, b) => a.zoom - b.zoom);
+  const index = sorted.findIndex((bp) => bp.id === id);
+  return sortedRegionTweenBounds(sorted, index);
+}
+
+function sortedRegionTweenBounds(
+  sorted: readonly Breakpoint[],
+  index: number,
+): { start: number; end: number } {
+  const bp = sorted[index];
+  if (!bp) return { start: MIN_REGION_ZOOM, end: MIN_REGION_ZOOM };
+  if (index === 0 || bp.transition === "snap") return { start: bp.zoom, end: bp.zoom };
+  const log = Math.log2(bp.zoom);
+  const previous = Math.log2(sorted[index - 1].zoom);
+  const next = sorted[index + 1];
+  const low = Math.max(Math.log2(MIN_REGION_ZOOM), (previous + log) / 2);
+  const high = Math.min(Math.log2(MAX_REGION_ZOOM), next ? (log + Math.log2(next.zoom)) / 2 : Infinity);
+  const tweenIn = bp.tweenIn ?? DEFAULT_REGION_TWEEN;
+  const tweenOut = bp.tweenOut ?? DEFAULT_REGION_TWEEN;
+  return {
+    start: tweenIn === 0 ? bp.zoom : Math.max(MIN_REGION_ZOOM, 2 ** Math.max(low, log - tweenIn)),
+    end: tweenOut === 0 ? bp.zoom : Math.min(MAX_REGION_ZOOM, 2 ** Math.min(high, log + tweenOut)),
+  };
 }
 
 /** Stable palette shared by the timeline, properties, and layer keyframe dots. */
@@ -260,7 +303,7 @@ export function activeVariant(
   return element.variants.find((variant) => variant.id === variantId);
 }
 
-function presentationState(
+export function presentationState(
   element: BoardElement,
   presentationKey: string,
 ): ElementState {
@@ -348,7 +391,7 @@ function interpolateStates(a: ElementState, b: ElementState, t: number): Element
     height: lerp(a.height, b.height, t),
     rotation: lerp(a.rotation, b.rotation, t),
     opacity,
-    visible: opacity > 0,
+    visible: (a.visible || b.visible) && opacity > 0,
     fill: lerpHex(a.fill, b.fill, t),
     stroke: lerpHex(a.stroke, b.stroke, t),
     strokeWidth: lerp(a.strokeWidth, b.strokeWidth, t),
@@ -414,6 +457,23 @@ export function resolveState(
   zoom: number,
   breakpoints: Breakpoint[],
 ): ElementState {
+  if (isRegionTimeline(breakpoints)) {
+    const sorted = [...breakpoints].sort((a, b) => a.zoom - b.zoom);
+    // The first start only establishes the range; there is no state before it.
+    for (let index = 1; index < sorted.length; index++) {
+      const bp = sorted[index];
+      if (bp.transition === "snap") continue;
+      const { start, end } = sortedRegionTweenBounds(sorted, index);
+      if (end <= start || zoom < start || zoom > end) continue;
+      const from = presentationState(element, sorted[index - 1].id);
+      const to = presentationState(element, bp.id);
+      if (zoom <= start) return from;
+      if (zoom >= end) return to;
+      const t = (Math.log2(zoom) - Math.log2(start)) / (Math.log2(end) - Math.log2(start));
+      return interpolateStates(from, to, smoothstep(t));
+    }
+    return resolveStateDirect(element, zoom, sorted);
+  }
   // Check if zoom falls inside any breakpoint's transition zone.
   for (const bp of breakpoints) {
     if (!bp.transitionRange || bp.transitionRange <= 0) continue;
@@ -459,6 +519,13 @@ export function activeBreakpoint(
   breakpoints: Breakpoint[],
 ): Breakpoint | undefined {
   if (breakpoints.length === 0) return undefined;
+  if (isRegionTimeline(breakpoints)) {
+    const sorted = [...breakpoints].sort((a, b) => a.zoom - b.zoom);
+    for (let index = sorted.length - 1; index >= 0; index--) {
+      if (zoom >= sorted[index].zoom) return sorted[index];
+    }
+    return sorted[0];
+  }
 
   const belowBase = breakpoints
     .filter((bp) => bp.zoom < BASE_ZOOM)

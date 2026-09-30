@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type Board } from "./model";
+import { createRegionTimeline } from "./regions";
 import {
   captureDocument, deserializeBoard, ensureHostIdentity, getHostIdentity,
   initializeBoardDocument, restoreDocument, rotateHostInvite, serializeBoard,
@@ -31,6 +32,109 @@ function fileWithSnapshot(snapshot: unknown): string {
     return JSON.stringify({ format: "ai.univrs.whiteboard", version: 1, yjsUpdate: btoa(binary) });
   } finally { doc.destroy(); }
 }
+
+describe("region document persistence", () => {
+  const first = { ...createRegionTimeline()[0], id: "first" };
+  const second = { ...first, id: "second", zoom: 1, tweenIn: 0, tweenOut: 0.5 };
+  const regionBoard: Board = {
+    ...board, breakpoints: [first, second],
+    elements: [{ ...board.elements[0], keyframes: { first: { x: 10 }, second: { y: 20 } } }],
+  };
+
+  it("round trips region IDs, independent overrides and tween metadata unchanged", () => {
+    expect(deserializeBoard(serializeBoard(regionBoard))).toEqual(regionBoard);
+    const checkpoint = captureDocument();
+    syncBoardDocument(board);
+    restoreDocument(checkpoint);
+    const { snapshot, doc } = decodedSnapshot(JSON.stringify({ yjsUpdate: captureDocument().yjsUpdate }));
+    expect(snapshot).toEqual(regionBoard);
+    doc.destroy();
+    expect(deserializeBoard(serializeBoardCopy(regionBoard))).toEqual(regionBoard);
+  });
+
+  it("versions region files so old apps reject them instead of applying old semantics", () => {
+    expect(JSON.parse(serializeBoard(regionBoard)).version).toBe(2);
+    expect(JSON.parse(serializeBoardCopy(regionBoard)).version).toBe(2);
+    expect(JSON.parse(serializeBoard(board)).version).toBe(1);
+    expect(deserializeBoard(fileWithSnapshot(board))).toEqual(board);
+    const unsupported = { ...JSON.parse(serializeBoard(regionBoard)), version: 3 };
+    const before = captureDocument();
+    expect(() => deserializeBoard(JSON.stringify(unsupported))).toThrow("Unsupported Whiteboard document version");
+    expect(captureDocument()).toEqual(before);
+  });
+
+  it("preserves explicit texture clears in one region through save and guest copy", () => {
+    const textured: Board = {
+      ...regionBoard,
+      elements: [{
+        ...regionBoard.elements[0],
+        base: {
+          ...DEFAULT_STATE, fillTextureSrc: "data:image/png;base64,AAAA",
+          strokeTextureSrc: "data:image/png;base64,AAAA",
+        },
+        keyframes: { second: { fillTextureSrc: "", strokeTextureSrc: "" } },
+      }],
+    };
+    for (const contents of [serializeBoard(textured), serializeBoardCopy(textured)]) {
+      const loaded = deserializeBoard(contents);
+      expect(loaded.elements[0].keyframes.second).toEqual({ fillTextureSrc: "", strokeTextureSrc: "" });
+      expect(loaded.elements[0].base.fillTextureSrc).toBe("data:image/png;base64,AAAA");
+    }
+  });
+
+  it("does not migrate old files or add omitted optional region metadata", () => {
+    const legacy: Board = {
+      ...board, breakpoints: [{ id: "old", zoom: 0.5, name: "Overview", transition: "crossfade", transitionRange: 0.1 }],
+    };
+    expect(deserializeBoard(serializeBoard(legacy))).toEqual(legacy);
+    const { tweenIn: _in, tweenOut: _out, ...withoutWidths } = first;
+    const minimal = { ...board, breakpoints: [withoutWidths] };
+    expect(deserializeBoard(serializeBoard(minimal))).toEqual(minimal);
+  });
+
+  it.each([
+    [{ ...first, region: false }],
+    [{ ...first, region: "true" }],
+    [{ ...first, region: null }],
+    [first, { ...second, region: undefined }],
+    [{ ...first, zoom: 0.1 }],
+    [{ ...first, zoom: 0.01 }],
+    [first, { ...second, zoom: 8 }],
+    [first, { ...second, zoom: 9 }],
+    [first, second, { ...second, id: "third", zoom: 0.5 }],
+    [first, { ...second, zoom: 0.05 }],
+    [first, { ...second, id: first.id }],
+    [{ ...first, id: "__base__" }],
+    [{ ...first, tweenIn: -1 }],
+    [{ ...first, tweenOut: 17 }],
+    [{ ...first, tweenIn: Infinity }],
+    [{ ...first, tweenOut: NaN }],
+    [{ ...first, tweenIn: "0.12" }],
+    [{ ...first, tweenOut: null }],
+    [{ ...first, region: undefined }],
+    [{ ...first, unexpected: "payload" }],
+    [JSON.parse(JSON.stringify(first).replace('"region":true', '"region":true,"__proto__":{}'))],
+  ])("rejects malformed region files atomically %#", (...breakpoints) => {
+    syncBoardDocument(board);
+    const original = captureDocument();
+    const file = fileWithSnapshot({ ...board, breakpoints });
+    expect(() => deserializeBoard(file)).toThrow();
+    expect(captureDocument()).toEqual(original);
+    expect(() => restoreDocument({ yjsUpdate: JSON.parse(file).yjsUpdate })).toThrow();
+    expect(captureDocument()).toEqual(original);
+  });
+
+  it("keeps region file validation independent of session count and string limits", () => {
+    const offline: Board = {
+      ...board,
+      breakpoints: Array.from({ length: 257 }, (_, index) => ({
+        ...first, id: `r${index}`, zoom: index === 0 ? 0.05 : 0.05 * 2 ** (index / 40),
+        name: "Region name".repeat(200),
+      })),
+    };
+    expect(deserializeBoard(serializeBoard(offline))).toEqual(offline);
+  });
+});
 
 describe("document identities", () => {
   it("generates lazily once across concurrent calls and survives file round trips", async () => {

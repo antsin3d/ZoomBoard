@@ -5,7 +5,7 @@ import ZoomTimeline from "./panels/ZoomTimeline";
 import LayersPanel from "./panels/LayersPanel";
 import PropsPanel from "./panels/PropsPanel";
 import { useBoardStore } from "./whiteboard/store";
-import { TIERS } from "./whiteboard/tiers";
+import { migrateToRegions } from "./whiteboard/regions";
 import { deserializeBoard, serializeBoard, serializeBoardCopy } from "./whiteboard/document";
 import { openBoardFile, saveBoardFile } from "./whiteboard/fileIO";
 import { isTauri } from "@tauri-apps/api/core";
@@ -75,41 +75,81 @@ function ShapeMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [lastShape, setLastShape] = useState<ShapeType>("rect");
+  const menuRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const active = SHAPE_TOOLS.find((shape) => shape.id === lastShape) ?? SHAPE_TOOLS[0];
+  const shapeActive = SHAPE_TOOLS.some((shape) => shape.id === tool);
 
   useEffect(() => {
-    if (SHAPE_TOOLS.some((shape) => shape.id === tool)) setLastShape(tool as ShapeType);
-  }, [tool]);
+    if (shapeActive) setLastShape(tool as ShapeType);
+  }, [shapeActive, tool]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      toggleRef.current?.focus();
+    };
+    window.addEventListener("pointerdown", closeOnOutsideClick);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsideClick);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const chooseShape = (shape: ShapeType) => {
+    setLastShape(shape);
+    onSelect(shape);
+    setOpen(false);
+  };
 
   return (
-    <div
-      className="shape-menu"
-      onMouseLeave={() => setOpen(false)}
-    >
+    <div className="shape-menu" ref={menuRef}>
       <button
         type="button"
-        className={`tool-btn shape-menu-trigger${SHAPE_TOOLS.some((shape) => shape.id === tool) ? " tool-active" : ""}`}
-        title={`${active.title} · Click to select and show more shapes`}
+        className={`tool-btn shape-menu-primary${shapeActive ? " tool-active" : ""}`}
+        title={active.title}
         onClick={() => {
           onSelect(lastShape);
-          setOpen((wasOpen) => !wasOpen);
+          setOpen(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setOpen(true);
+          }
         }}
       >
-        <span>{active.label}</span><span className="shape-menu-caret">⌄</span>
+        <span>{active.label}</span>
+      </button>
+      <button
+        ref={toggleRef}
+        type="button"
+        className={`tool-btn shape-menu-toggle${open ? " shape-menu-toggle-open" : ""}`}
+        title="Choose shape"
+        aria-label="Choose shape"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((wasOpen) => !wasOpen)}
+      >
+        <span className="shape-menu-caret" aria-hidden="true">⌄</span>
       </button>
       {open && (
-        <div className="shape-menu-popover">
+        <div className="shape-menu-popover" role="menu" aria-label="Shapes">
           {SHAPE_TOOLS.map((shape) => (
             <button
               key={shape.id}
               type="button"
               className={`shape-choice${tool === shape.id ? " shape-choice-active" : ""}`}
               title={shape.title}
-              onClick={() => {
-                setLastShape(shape.id);
-                onSelect(shape.id);
-                setOpen(false);
-              }}
+              role="menuitemradio"
+              aria-checked={tool === shape.id}
+              onClick={() => chooseShape(shape.id)}
             >
               <span className="shape-choice-icon">{shape.label}</span>
               <span>{shape.title.replace(/\s*\([^)]*\)$/, "")}</span>
@@ -132,7 +172,7 @@ function Toolbar() {
   const guest = session.role === "guest";
   const editable = !guest || (session.status === "online" && session.allowEditing);
   const {
-    tool, setTool, zoom, activeTier, board, activeBreakpointId,
+    tool, setTool, zoom, board, activeBreakpointId,
     _past, _future, undo, redo, replaceBoard,
     connectSelected,
   } = useBoardStore();
@@ -218,7 +258,6 @@ function Toolbar() {
     };
   }, []);
 
-  const activeTierObj = TIERS.find((t) => t.id === activeTier);
   // Use the store's zone-aware activeBreakpointId — not a manual cascade lookup.
   const activeBp = board.breakpoints.find((bp) => bp.id === activeBreakpointId);
 
@@ -238,7 +277,9 @@ function Toolbar() {
     try {
       const opened = await openBoardFile();
       if (!opened || useSessionStore.getState().role !== "idle") return;
-      const nextBoard = deserializeBoard(opened.contents);
+      // Migrate only local files. Remote snapshots must keep the host's IDs
+      // exactly, otherwise collaboration patches could target different clips.
+      const nextBoard = migrateToRegions(deserializeBoard(opened.contents));
       replaceBoard(nextBoard);
       setDocumentPath(opened.path);
       setDocumentName(opened.name);
@@ -439,7 +480,7 @@ function Toolbar() {
         <button className="tool-btn" onClick={() => zoomTo(1.4)} title="Zoom in">+</button>
       </div>
 
-      {/* Zone indicator — Base when between breakpoints, breakpoint name otherwise */}
+      {/* Current zoom region */}
       <div className="toolbar-tier">
         {activeBp
           ? (
@@ -450,7 +491,7 @@ function Toolbar() {
               {activeBp.name}
             </span>
           )
-          : <span className="tier-badge base">Base · {activeTierObj?.name}</span>}
+          : <span className="tier-badge base">All zoom levels</span>}
       </div>
 
       {/* Keyboard shortcut hint */}
@@ -476,13 +517,39 @@ function Toolbar() {
 export default function App() {
   const editingLocked = useSessionStore((state) =>
     state.role === "guest" && (state.status !== "online" || !state.allowEditing));
+  const tool = useBoardStore((state) => state.tool);
+  const setTool = useBoardStore((state) => state.setTool);
   return (
-    <div className="app">
+    <div
+      className="app"
+      onPointerDownCapture={(event) => {
+        if (tool === "select") return;
+        const target = event.target as HTMLElement;
+        if (target.closest([
+          ".canvas-wrapper",
+          ".shape-menu",
+          ".timeline-track",
+          ".zr-track",
+          "[data-layer-row]",
+          "[role='dialog']",
+          "[role='button']",
+          "[role='option']",
+          "button",
+          "input",
+          "textarea",
+          "select",
+          "a",
+          "label",
+          "[contenteditable='true']",
+        ].join(","))) return;
+        setTool("select");
+      }}
+    >
       <div className="app-toolbar"><Toolbar /></div>
       <div className="app-layers" inert={editingLocked}><LayersPanel /></div>
       <div className="app-canvas"><BoardCanvas /></div>
       <div className="app-props" inert={editingLocked}><PropsPanel /></div>
-      <div className="app-timeline" inert={editingLocked}><ZoomTimeline /></div>
+      <div className="app-timeline"><ZoomTimeline /></div>
     </div>
   );
 }

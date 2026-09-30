@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { useBoardStore } from "../whiteboard/store";
-import { breakpointColor, type BoardElement } from "../whiteboard/model";
+import { DEFAULT_STATE, breakpointColor, type BoardElement, type ElementState } from "../whiteboard/model";
 import {
   canMoveLayers,
   isContainer,
@@ -222,13 +222,16 @@ function LayerRow({ row }: { row: LayerRowInfo }) {
       {hasKeyframes && (
         <div className="layer-dots">
           {board.breakpoints.map((bp) => {
-            if (!(bp.id in el.keyframes)) return null;
+            const patch = el.keyframes[bp.id];
+            if (!patch || !Object.entries(patch).some(([key, value]) =>
+              JSON.stringify(value) !== JSON.stringify(el.base[key as keyof ElementState] ?? DEFAULT_STATE[key as keyof ElementState]),
+            )) return null;
             return (
               <span
                 key={bp.id}
                 className="layer-dot"
                 style={{ background: breakpointColor(board.breakpoints, bp.id) }}
-                title={`Keyframe at ${bp.name}`}
+                title={`Customized in ${bp.name}`}
               />
             );
           })}

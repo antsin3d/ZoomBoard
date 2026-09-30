@@ -14,7 +14,10 @@ import {
   resolveState,
   resolveStateDirect,
   activeBreakpoint,
+  isRegionTimeline,
 } from "./model";
+import { createRegionTimeline } from "./regions";
+import { canCutRegion } from "./regionEditing";
 import { resolveTier, rawTier, type TierId } from "./tiers";
 import { initializeBoardDocument, syncBoardDocument } from "./document";
 import { canEditBoard, canCopyBoard } from "../collaboration/access";
@@ -214,6 +217,8 @@ export interface BoardStore {
   selectedIds: string[];
   tool: ToolMode;
   shiftHeld: boolean;
+  /** One-shot request for the Properties panel to focus an element's text. */
+  textEditRequest: { id: string; nonce: number } | null;
 
   // ── Actions: viewport ──
   setZoom: (zoom: number) => void;
@@ -227,6 +232,7 @@ export interface BoardStore {
 
   // ── Actions: selection ──
   selectElement: (id: string | null, addToSelection?: boolean) => void;
+  editElementText: (id: string) => void;
   clearSelection: () => void;
   setSelectedIds: (ids: string[]) => void;
 
@@ -285,9 +291,12 @@ export interface BoardStore {
   // ── Actions: breakpoints ──
   addBreakpoint: (zoom: number, name?: string) => string;
   removeBreakpoint: (id: string) => void;
+  /** Merge adjacent regions into the leftmost one, keeping its styling. */
+  mergeRegions: (ids: string[]) => string | null;
   updateBreakpoint: (
     id: string,
-    patch: Partial<Pick<Breakpoint, "zoom" | "name" | "transition" | "transitionRange">>,
+    patch: Partial<Pick<Breakpoint, "zoom" | "name" | "transition" | "transitionRange" | "tweenIn" | "tweenOut">>,
+    recordHistory?: boolean,
   ) => void;
 
   // ── Actions: elements ──
@@ -323,14 +332,8 @@ export interface BoardStore {
 // ─── Seed board ───────────────────────────────────────────────────────────────
 
 function seedBoard(): Board {
-  const bpOverview = newId();
-  const bpDetail = newId();
-
   return {
-    breakpoints: [
-      { id: bpOverview, zoom: 0.25, name: "Overview", transition: "crossfade", transitionRange: 0.45 },
-      { id: bpDetail, zoom: 2.0, name: "Detail", transition: "crossfade", transitionRange: 0.45 },
-    ],
+    breakpoints: createRegionTimeline(),
     elements: [],
   };
 }
@@ -380,6 +383,7 @@ export const useBoardStore = create<BoardStore>()(
       selectedIds: [],
       tool: "select",
       shiftHeld: false,
+      textEditRequest: null,
 
       // ── Undo / Redo ───────────────────────────────────────────────────────
 
@@ -494,6 +498,15 @@ export const useBoardStore = create<BoardStore>()(
       setShiftHeld: (held) => set({ shiftHeld: held }),
 
       // ── Selection ─────────────────────────────────────────────────────────
+
+      editElementText: (id) => {
+        const element = get().board.elements.find((candidate) => candidate.id === id);
+        if (!element || element.type === "group" || !canEditBoard()) return;
+        set((s) => ({
+          selectedIds: [id],
+          textEditRequest: { id, nonce: (s.textEditRequest?.nonce ?? 0) + 1 },
+        }));
+      },
 
       selectElement: (id, addToSelection = false) => {
         if (id === null) { set({ selectedIds: [] }); return; }
@@ -1168,6 +1181,36 @@ export const useBoardStore = create<BoardStore>()(
       // ── Breakpoints ───────────────────────────────────────────────────────
 
       addBreakpoint: (zoom, name) => {
+        if (!canEditBoard() || !Number.isFinite(zoom)) return "";
+        const { board } = get();
+        if (isRegionTimeline(board.breakpoints)) {
+          // Cuts copy the source clip, so inserting a divider never changes
+          // the picture. Each side can then be edited independently.
+          const cut = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
+          if (!canCutRegion(board.breakpoints, cut)) return "";
+          const source = activeBreakpoint(cut, board.breakpoints)!;
+          const id = newId();
+          const bp: Breakpoint = {
+            id, region: true, zoom: cut,
+            name: name?.trim() || `Region ${board.breakpoints.length + 1}`,
+            transition: "crossfade", transitionRange: 0,
+            tweenIn: 0.12, tweenOut: 0.12,
+          };
+          saveHistory();
+          const breakpoints = sortedBreakpoints([...board.breakpoints, bp]);
+          set({
+            board: {
+              ...board,
+              breakpoints,
+              elements: board.elements.map((el) => ({
+                ...el,
+                keyframes: { ...el.keyframes, [id]: structuredClone(el.keyframes[source.id] ?? {}) },
+              })),
+            },
+            activeBreakpointId: activeBreakpoint(get().zoom, breakpoints)?.id,
+          });
+          return id;
+        }
         saveHistory();
         const id = newId();
         const bp: Breakpoint = {
@@ -1191,6 +1234,11 @@ export const useBoardStore = create<BoardStore>()(
       },
 
       removeBreakpoint: (id) => {
+        const { board } = get();
+        if (!board.breakpoints.some((bp) => bp.id === id)) return;
+        // The first region is the full-range foundation. Removing any later
+        // region extends its left neighbor, keeping that neighbor's styling.
+        if (isRegionTimeline(board.breakpoints) && board.breakpoints[0].id === id) return;
         saveHistory();
         set((s) => ({
           board: {
@@ -1209,11 +1257,67 @@ export const useBoardStore = create<BoardStore>()(
         }));
       },
 
-      updateBreakpoint: (id, patch) => {
+      mergeRegions: (ids) => {
+        const { board, zoom } = get();
+        if (!canEditBoard() || !isRegionTimeline(board.breakpoints)) return null;
+        const ordered = sortedBreakpoints(board.breakpoints);
+        const indexes = [...new Set(ids)]
+          .map((id) => ordered.findIndex((bp) => bp.id === id))
+          .filter((index) => index >= 0)
+          .sort((a, b) => a - b);
+        if (indexes.length < 2) return null;
+        if (indexes.some((index, i) => i > 0 && index !== indexes[i - 1] + 1)) return null;
+        const keep = ordered[indexes[0]].id;
+        const doomed = new Set(indexes.slice(1).map((index) => ordered[index].id));
+        const breakpoints = board.breakpoints.filter((bp) => !doomed.has(bp.id));
         saveHistory();
+        set({
+          board: {
+            ...board,
+            breakpoints,
+            elements: board.elements.map((el) => {
+              if (!Object.keys(el.keyframes).some((key) => doomed.has(key))) return el;
+              const keyframes = { ...el.keyframes };
+              for (const id of doomed) delete keyframes[id];
+              return { ...el, keyframes };
+            }),
+          },
+          activeBreakpointId: activeBreakpoint(zoom, breakpoints)?.id,
+        });
+        return keep;
+      },
+
+      updateBreakpoint: (id, patch, recordHistory = true) => {
+        const { board } = get();
+        const current = board.breakpoints.find((bp) => bp.id === id);
+        if (!current || !canEditBoard()) return;
+        const nextPatch = { ...patch };
+        for (const key of ["zoom", "transitionRange", "tweenIn", "tweenOut"] as const) {
+          if (nextPatch[key] !== undefined && !Number.isFinite(nextPatch[key])) return;
+        }
+        if (nextPatch.name !== undefined) nextPatch.name = nextPatch.name.trim() || current.name;
+        if (isRegionTimeline(board.breakpoints)) {
+          const index = board.breakpoints.indexOf(current);
+          if (nextPatch.zoom !== undefined) {
+            const previousZoom = board.breakpoints[Math.max(0, index - 1)].zoom;
+            const nextZoom = board.breakpoints[index + 1]?.zoom ?? MAX_ZOOM;
+            const gap = Math.min(0.02, Math.log2(nextZoom / previousZoom) / 3);
+            nextPatch.zoom = index === 0 ? MIN_ZOOM : clamp(nextPatch.zoom,
+              previousZoom * 2 ** gap,
+              nextZoom / 2 ** gap);
+          }
+          const center = nextPatch.zoom ?? current.zoom;
+          const leftLimit = index === 0 ? MIN_ZOOM : Math.sqrt(board.breakpoints[index - 1].zoom * center);
+          const rightLimit = board.breakpoints[index + 1]
+            ? Math.sqrt(center * board.breakpoints[index + 1].zoom) : MAX_ZOOM;
+          if (nextPatch.tweenIn !== undefined) nextPatch.tweenIn = clamp(nextPatch.tweenIn, 0, Math.log2(center / leftLimit));
+          if (nextPatch.tweenOut !== undefined) nextPatch.tweenOut = clamp(nextPatch.tweenOut, 0, Math.log2(rightLimit / center));
+        }
+        if (Object.entries(nextPatch).every(([key, value]) => current[key as keyof Breakpoint] === value)) return;
+        if (recordHistory) saveHistory();
         set((s) => {
           const breakpoints = sortedBreakpoints(
-            s.board.breakpoints.map((bp) => (bp.id === id ? { ...bp, ...patch } : bp)),
+            s.board.breakpoints.map((bp) => (bp.id === id ? { ...bp, ...nextPatch } : bp)),
           );
           return {
             board: { ...s.board, breakpoints },
@@ -1367,6 +1471,7 @@ export const useBoardStore = create<BoardStore>()(
               const existing = el.keyframes[breakpointId] ?? {};
               const nextContent = typeof patch.content === "string" ? patch.content : undefined;
               const shouldSyncShapeText =
+                !isRegionTimeline(s.board.breakpoints) &&
                 el.type !== "text" &&
                 nextContent !== undefined &&
                 nextContent.trim().length > 0 &&
@@ -1408,6 +1513,9 @@ export const useBoardStore = create<BoardStore>()(
       },
 
       clearKeyframeKey: (elementId, breakpointId, key) => {
+        const element = get().board.elements.find((el) => el.id === elementId);
+        if (!element || !(key in (element.keyframes[breakpointId] ?? {}))) return;
+        saveHistory();
         set((s) => ({
           board: {
             ...s.board,

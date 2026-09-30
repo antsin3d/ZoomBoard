@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_STATE, type Board, type BoardElement } from "../whiteboard/model";
+import { createRegionTimeline } from "../whiteboard/regions";
 import {
   MAX_MESSAGE_BYTES, applyPatch, createIdentity, createPatch, inviteCode, inviteLink,
   parseInvite, peerId, signChallenge, validateBoard, validateHostIdentity, verifyChallenge,
@@ -161,6 +162,75 @@ describe("snapshot validation", () => {
     const snapshot = validateBoard(original);
     snapshot.elements[0].base.x = 10;
     expect(original.elements[0].base.x).toBe(0);
+  });
+});
+
+describe("region snapshot and patch validation", () => {
+  const first = { ...createRegionTimeline()[0], id: "first" };
+  const second = { ...first, id: "second", zoom: 1, tweenIn: 0.2, tweenOut: 0.4 };
+  const snapshot: Board = { breakpoints: [first, second], elements: [el("a")] };
+
+  it("preserves region metadata in sanitized snapshots and serialized patches", () => {
+    expect(validateBoard(snapshot)).toEqual(snapshot);
+    const after: Board = {
+      ...snapshot,
+      breakpoints: [first, { ...second, zoom: 1.5, tweenIn: 0, tweenOut: 0.7 }],
+      elements: [{ ...el("a"), keyframes: { second: { x: 20 } } }],
+    };
+    const patch = JSON.parse(JSON.stringify(createPatch(snapshot, after)));
+    expect(patch.breakpoints[0].after).toEqual(after.breakpoints[1]);
+    expect(applyPatch(snapshot, patch)).toEqual(after);
+    expect(snapshot.breakpoints[1]).toEqual(second);
+  });
+
+  it("preserves omitted optional widths and never migrates legacy snapshots", () => {
+    const { tweenIn: _in, tweenOut: _out, ...withoutWidths } = first;
+    expect(validateBoard({ ...snapshot, breakpoints: [withoutWidths] }).breakpoints).toEqual([withoutWidths]);
+    const legacy = { id: "old", zoom: 2, name: "Detail", transition: "snap", transitionRange: 0 };
+    expect(validateBoard({ ...snapshot, breakpoints: [legacy] }).breakpoints).toEqual([legacy]);
+    expect(validateBoard(board()).breakpoints).toEqual([]);
+  });
+
+  it.each([
+    [{ ...first, region: false }],
+    [{ ...first, region: "true" }],
+    [{ ...first, region: null }],
+    [first, { ...second, region: undefined }],
+    [{ ...first, zoom: 0.1 }],
+    [{ ...first, zoom: 0.01 }],
+    [first, { ...second, zoom: 8 }],
+    [first, { ...second, zoom: 9 }],
+    [first, second, { ...second, id: "third", zoom: 0.5 }],
+    [first, { ...second, zoom: 0.05 }],
+    [first, { ...second, id: first.id }],
+    [{ ...first, id: "__base__" }],
+    [{ ...first, tweenIn: -0.1 }],
+    [{ ...first, tweenOut: 16.01 }],
+    [{ ...first, tweenIn: Infinity }],
+    [{ ...first, tweenOut: NaN }],
+    [{ ...first, tweenIn: "0.2" }],
+    [{ ...first, tweenOut: null }],
+    [{ ...first, region: undefined }],
+    [{ ...first, surprise: {} }],
+    [JSON.parse(JSON.stringify(first).replace('"region":true', '"region":true,"__proto__":{}'))],
+  ])("rejects malformed region timelines %#", (...breakpoints) => {
+    expect(() => validateBoard({ ...snapshot, breakpoints })).toThrow();
+  });
+
+  it("validates final region ordering and malicious metadata when applying a patch", () => {
+    const after = { ...snapshot, breakpoints: [first, { ...second, tweenOut: 0.9 }] };
+    const patch = createPatch(snapshot, after)!;
+    const changed = patch.breakpoints[0].after!;
+    for (const invalid of [
+      { ...changed, zoom: 0.05 },
+      { ...changed, region: undefined },
+      { ...changed, tweenOut: -1 },
+      { ...changed, extra: "untrusted" },
+    ]) {
+      expect(() => applyPatch(snapshot, {
+        ...patch, breakpoints: [{ ...patch.breakpoints[0], after: invalid }],
+      })).toThrow();
+    }
   });
 });
 
