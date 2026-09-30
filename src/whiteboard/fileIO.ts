@@ -56,7 +56,7 @@ function browserOpen(): Promise<OpenedBoardFile | null> {
   });
 }
 
-function browserSave(contents: string, suggestedName: string): void {
+function browserSave(contents: string, suggestedName: string): string {
   const blob = new Blob([contents], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -64,6 +64,7 @@ function browserSave(contents: string, suggestedName: string): void {
   anchor.download = suggestedName;
   anchor.click();
   URL.revokeObjectURL(url);
+  return suggestedName;
 }
 
 export async function openBoardFile(): Promise<OpenedBoardFile | null> {
@@ -86,8 +87,7 @@ export async function saveBoardFile(
   suggestedName = "Untitled.board",
 ): Promise<string | null> {
   if (!isTauri()) {
-    browserSave(contents, suggestedName);
-    return null;
+    return browserSave(contents, suggestedName);
   }
 
   const path = currentPath ?? await save({

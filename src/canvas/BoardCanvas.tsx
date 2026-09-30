@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { Stage, Layer, Line as KonvaLine, Rect as KonvaRect, Ellipse as KonvaEllipse, Group as KonvaGroup, Transformer } from "react-konva";
 import type Konva from "konva";
 import { useBoardStore } from "../whiteboard/store";
+import { canCopyBoard, canEditBoard } from "../collaboration/access";
+import { followPeer, publishCursor, publishViewport, useSessionStore } from "../collaboration/session";
+import PresenceOverlay from "../collaboration/PresenceOverlay";
 import {
   BASE_KEYFRAME_ID,
   resolveState,
@@ -425,6 +429,17 @@ interface MarqueeState  { startX: number; startY: number; curX: number;     curY
 interface ConnectorDraft { startX: number; startY: number; curX: number; curY: number; }
 
 export default function BoardCanvas() {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  // Cursor traffic belongs to the overlay, not the expensive board render.
+  const { role, status, allowEditing, followingId, followX, followY, followZoom } = useSessionStore(useShallow((state) => {
+    const viewport = state.participants.find((peer) => peer.id === state.followingId)?.viewport;
+    return {
+      role: state.role, status: state.status, allowEditing: state.allowEditing, followingId: state.followingId,
+      followX: viewport?.x, followY: viewport?.y, followZoom: viewport?.zoom,
+    };
+  }));
+  // Do not toggle Konva's hit tree for each pending host acknowledgement.
+  const editable = role !== "guest" || (status === "online" && allowEditing);
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const nodeMapRef = useRef<Map<string, Konva.Group>>(new Map());
@@ -432,6 +447,7 @@ export default function BoardCanvas() {
   const [drawDrag, setDrawDrag] = useState<DrawDragState | null>(null);
   const [marqueeDrag, setMarqueeDrag] = useState<MarqueeState | null>(null);
   const [connectorDraft, setConnectorDraft] = useState<ConnectorDraft | null>(null);
+  const [interactionEpoch, setInteractionEpoch] = useState(0);
 
   const spaceHeld = useRef(false);
   const isPanning = useRef(false);
@@ -459,12 +475,37 @@ export default function BoardCanvas() {
 
   const {
     board, zoom, panX, panY,
-    selectedIds, tool,
+    selectedIds, tool: chosenTool,
     setZoom, setPan, setTool, selectElement, clearSelection, setSelectedIds,
     addElement, createFrame, reparentElements, setKeyframe, moveSelectedBy,
     groupSelected, ungroup, resolve, setShiftHeld,
     undo, redo, copySelected, pasteClipboard, duplicateSelected, connectSelected,
   } = useBoardStore();
+  const tool = editable ? chosenTool : "select";
+
+  useEffect(() => {
+    if (!followingId || followX === undefined || followY === undefined || followZoom === undefined) return;
+    const nextZoom = clamp(followZoom, MIN_ZOOM, MAX_ZOOM);
+    setZoom(nextZoom);
+    setPan(size.w / 2 - followX * nextZoom, size.h / 2 - followY * nextZoom);
+  }, [followingId, followX, followY, followZoom, size.w, size.h, setZoom, setPan]);
+
+  useEffect(() => {
+    if (followingId) return;
+    publishViewport({ x: (size.w / 2 - panX) / zoom, y: (size.h / 2 - panY) / zoom, zoom });
+  }, [zoom, panX, panY, size.w, size.h, followingId, role, status]);
+
+  useEffect(() => {
+    if (editable) return;
+    setDrawDrag(null);
+    setConnectorDraft(null);
+    clearLivePositions();
+    for (const node of nodeMapRef.current.values()) node.stopDrag();
+    transformerRef.current?.stopTransform();
+    // Konva transforms are imperative. Recreate the hit tree when permission is
+    // revoked so an interrupted drag/resize cannot leave unsaved geometry behind.
+    setInteractionEpoch((value) => value + 1);
+  }, [editable]);
 
   const handleSelect = useCallback((id: string, addToSelection?: boolean) => {
     if (suppressClickRef.current) {
@@ -487,9 +528,13 @@ export default function BoardCanvas() {
   }, [board, resolve, zoom]);
 
   useEffect(() => {
-    const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const onResize = () => setSize({ w: wrapper.clientWidth, h: wrapper.clientHeight });
+    onResize();
+    const observer = new ResizeObserver(onResize);
+    observer.observe(wrapper);
+    return () => { observer.disconnect(); publishCursor(null); };
   }, []);
 
   // Track Shift and Space keys globally.
@@ -514,6 +559,7 @@ export default function BoardCanvas() {
 
   // Wheel zoom — anchored to pointer.
   const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
+    followPeer(null);
     e.evt.preventDefault();
     const stage = stageRef.current;
     if (!stage) return;
@@ -528,6 +574,7 @@ export default function BoardCanvas() {
 
   // Mousedown: start pan (right-click or space+left) or marquee/draw.
   const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    followPeer(null);
     const stage = stageRef.current;
     if (!stage) return;
     const ptr = stage.getPointerPosition();
@@ -551,6 +598,7 @@ export default function BoardCanvas() {
       }
       return;
     }
+    if (!canEditBoard()) return;
 
     // Connector tool: press anywhere (shape edge or empty space) to start a wire.
     if (tool === "connector") {
@@ -632,6 +680,12 @@ export default function BoardCanvas() {
         if (inBounds.length > 0) setSelectedIds(inBounds.map((el) => el.id));
       }
       setMarqueeDrag(null);
+      return;
+    }
+
+    if (!canEditBoard()) {
+      setConnectorDraft(null);
+      setDrawDrag(null);
       return;
     }
 
@@ -742,6 +796,7 @@ export default function BoardCanvas() {
   // Live drag feedback: publish the in-flight position so attached
   // connectors track the node, and highlight the frame under the pointer.
   const handleDragProgress = useCallback((id: string, x?: number, y?: number) => {
+    if (!canEditBoard()) return;
     if (x !== undefined && y !== undefined) {
       setLivePosition(id, { x, y });
       scheduleLiveTick();
@@ -755,6 +810,7 @@ export default function BoardCanvas() {
   // Element / group drag end — handles multi-select too.
   const handleDragEnd = useCallback((id: string, newX: number, newY: number) => {
     clearLivePositions();
+    if (!canEditBoard()) return;
     if (liveRafRef.current) {
       cancelAnimationFrame(liveRafRef.current);
       liveRafRef.current = 0;
@@ -795,6 +851,7 @@ export default function BoardCanvas() {
   }, [moveSelectedBy, paintDropHighlight, reparentElements, resolveDrop, setKeyframe]);
 
   const handleAltDragStart = useCallback((id: string) => {
+    if (!canEditBoard()) return;
     const { selectedIds: sids } = useBoardStore.getState();
     if (!sids.includes(id)) selectElement(id);
     // Leave exact copies at the starting position while the currently selected
@@ -816,7 +873,7 @@ export default function BoardCanvas() {
       const transformable = element
         && element.type !== "group"
         && element.type !== "connector";
-      if (selected && state.tool === "select" && transformable && transformerRef.current) {
+      if (canEditBoard() && selected && state.tool === "select" && transformable && transformerRef.current) {
         transformerRef.current.nodes([node]);
         transformerRef.current.getLayer()?.batchDraw();
       }
@@ -840,18 +897,19 @@ export default function BoardCanvas() {
     const { board: b, selectedIds: sids, tool: t } = useBoardStore.getState();
     const single = sids.length === 1 && t === "select";
     const el = single ? b.elements.find((e) => e.id === sids[0]) : null;
-    const showTr = single
+    const showTr = editable && single
       && el
       && el.type !== "group"
       && el.type !== "connector";
     const node = showTr ? nodeMapRef.current.get(sids[0]) : null;
     tr.nodes(node ? [node] : []);
     tr.getLayer()?.batchDraw();
-  }, [selectedIds, tool, board.elements]);
+  }, [selectedIds, tool, board.elements, editable]);
 
   // When a transform ends, convert Konva's scale+position back to our top-left
   // coordinate convention (same as the center-pivot dragEnd conversion).
   const handleTransformEnd = useCallback(() => {
+    if (!canEditBoard()) return;
     const { selectedIds: sids, activeBreakpointId } = useBoardStore.getState();
     if (sids.length !== 1) return;
     const node = nodeMapRef.current.get(sids[0]);
@@ -884,17 +942,30 @@ export default function BoardCanvas() {
   // Keyboard shortcuts.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const inInput = (e.target as HTMLElement)?.matches?.("input,textarea");
+      const inInput = (e.target as HTMLElement)?.closest?.("input,textarea,select,[contenteditable=true]");
       if (inInput) return;
 
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        if (canCopyBoard()) void copySelected();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        const { board: b } = useBoardStore.getState();
+        setSelectedIds(b.elements.filter((el) => !el.parentId).map((el) => el.id));
+        return;
+      }
+      if (!canEditBoard()) {
+        if (e.key === "Delete" || e.key === "Backspace" ||
+          ((e.ctrlKey || e.metaKey) && ["z", "y", "v", "d", "g", "x"].includes(e.key.toLowerCase()))) e.preventDefault();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault(); undo(); return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
         e.preventDefault(); redo(); return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
-        e.preventDefault(); void copySelected(); return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
         e.preventDefault(); void pasteClipboard(); return;
@@ -905,13 +976,6 @@ export default function BoardCanvas() {
 
       if (e.key === "Delete" || e.key === "Backspace") {
         useBoardStore.getState().removeElements(useBoardStore.getState().selectedIds);
-        return;
-      }
-
-      if ((e.ctrlKey || e.metaKey) && e.key === "a") {
-        e.preventDefault();
-        const { board: b } = useBoardStore.getState();
-        setSelectedIds(b.elements.filter((el) => !el.parentId).map((el) => el.id));
         return;
       }
 
@@ -969,7 +1033,17 @@ export default function BoardCanvas() {
   } : null;
 
   return (
+    <div ref={wrapperRef} className="canvas-wrapper"
+      onPointerDownCapture={() => followPeer(null)}
+      onPointerMove={(event) => {
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const view = useBoardStore.getState();
+        publishCursor(screenToWorld(event.clientX - bounds.left, event.clientY - bounds.top, view.panX, view.panY, view.zoom));
+      }}
+      onPointerLeave={() => publishCursor(null)}
+    >
     <Stage
+      key={interactionEpoch}
       ref={stageRef}
       width={size.w}
       height={size.h}
@@ -985,7 +1059,7 @@ export default function BoardCanvas() {
       onContextMenu={(e) => e.evt.preventDefault()}
       style={{ cursor: tool === "select" ? "default" : "crosshair" }}
     >
-      <Layer>
+      <Layer listening={editable}>
         {/* Container selection surfaces always sit behind ordinary objects,
             regardless of the containers' visual layer order. */}
         {tool === "select" && board.elements.map((el) => {
@@ -1221,6 +1295,8 @@ export default function BoardCanvas() {
         />
       </Layer>
     </Stage>
+    <PresenceOverlay />
+    </div>
   );
 }
 
@@ -1230,8 +1306,10 @@ export function useZoomControls() {
   const { zoom, panX, panY, setZoom, setPan } = useBoardStore();
 
   const zoomTo = useCallback((factor: number) => {
-    const cx = window.innerWidth / 2;
-    const cy = window.innerHeight / 2;
+    followPeer(null);
+    const canvas = document.querySelector(".app-canvas");
+    const cx = (canvas?.clientWidth ?? window.innerWidth) / 2;
+    const cy = (canvas?.clientHeight ?? window.innerHeight) / 2;
     const newZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
     const worldX = (cx - panX) / zoom;
     const worldY = (cy - panY) / zoom;
@@ -1240,8 +1318,10 @@ export function useZoomControls() {
   }, [zoom, panX, panY, setZoom, setPan]);
 
   const resetZoom = useCallback(() => {
+    followPeer(null);
+    const canvas = document.querySelector(".app-canvas");
     setZoom(1);
-    setPan(window.innerWidth / 2, window.innerHeight / 2);
+    setPan((canvas?.clientWidth ?? window.innerWidth) / 2, (canvas?.clientHeight ?? window.innerHeight) / 2);
   }, [setZoom, setPan]);
 
   return { zoomTo, resetZoom };

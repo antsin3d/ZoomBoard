@@ -17,6 +17,7 @@ import {
 } from "./model";
 import { resolveTier, rawTier, type TierId } from "./tiers";
 import { initializeBoardDocument, syncBoardDocument } from "./document";
+import { canEditBoard, canCopyBoard } from "../collaboration/access";
 import {
   anchorPoint,
   canMoveLayers,
@@ -349,7 +350,15 @@ function sortedBreakpoints(bps: Breakpoint[]): Breakpoint[] {
 }
 
 export const useBoardStore = create<BoardStore>()(
-  subscribeWithSelector((set, get) => {
+  subscribeWithSelector((rawSet, get) => {
+    // Every editing action funnels through this guard, including keyboard,
+    // properties panels, and async paste. Network updates use withRemoteBoard.
+    const set: typeof rawSet = (partial, replace?) => {
+      const next = typeof partial === "function" ? partial(get()) : partial;
+      if (!canEditBoard() && ("board" in next || "_past" in next || "_future" in next)) return;
+      if (replace) rawSet(next as BoardStore, true);
+      else rawSet(next, false);
+    };
     const initialBoard = seedBoard();
     const initialZoom = 1;
 
@@ -412,6 +421,7 @@ export const useBoardStore = create<BoardStore>()(
       },
 
       copySelected: async () => {
+        if (!canCopyBoard()) return;
         const { board, selectedIds } = get();
         const payload = collectSelectedHierarchy(board, selectedIds);
         if (!payload) return;
@@ -427,6 +437,7 @@ export const useBoardStore = create<BoardStore>()(
       },
 
       pasteClipboard: async () => {
+        if (!canEditBoard()) return;
         let payload: ElementsClipboard | null = null;
         try {
           const value = await navigator.clipboard?.readText();
@@ -435,6 +446,7 @@ export const useBoardStore = create<BoardStore>()(
           // Fall through to the in-memory clipboard.
         }
         payload ??= memoryClipboard;
+        if (!canEditBoard()) return;
         if (!payload) return;
 
         pasteCount += 1;

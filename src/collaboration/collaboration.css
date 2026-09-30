@@ -1,0 +1,54 @@
+.session-panel {
+  position: fixed; top: 50px; right: 12px; z-index: 100;
+  width: min(390px, calc(100vw - 24px)); max-height: calc(100vh - 64px);
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--panel-border); border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(15, 23, 42, .2); user-select: text;
+}
+.session-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--panel-border); }
+.session-header h2 { margin: 0; font-size: 14px; }
+.session-body { padding: 12px; overflow-y: auto; display: grid; gap: 12px; }
+.session-body h3 { margin: 0; font-size: 12px; }
+.session-row { display: flex; align-items: center; gap: 7px; min-width: 0; flex-wrap: wrap; }
+.session-truncate { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-field, .session-join { display: grid; gap: 6px; font-size: 12px; }
+.session-field input, .session-field textarea {
+  width: 100%; padding: 8px; border: 1px solid var(--panel-border); border-radius: 5px;
+  color: var(--ink); background: var(--panel); font: inherit; resize: vertical;
+}
+.session-panel button:not(.tool-btn) {
+  padding: 6px 9px; border-radius: 5px; border: 1px solid var(--panel-border);
+  color: var(--ink); background: var(--panel); font: inherit; font-size: 12px; cursor: pointer;
+}
+.session-panel button:hover:not(:disabled) { background: var(--accent-dim); }
+.session-panel button:disabled { opacity: .45; cursor: default; }
+.session-panel button.session-primary { background: var(--accent); color: white; border-color: var(--accent); }
+.session-panel button.session-danger { color: var(--danger); }
+.session-help { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.session-error { margin: 0; color: #b91c1c; font-size: 12px; overflow-wrap: anywhere; }
+.session-policy { margin: 0; border: 1px solid var(--panel-border); border-radius: 5px; display: grid; gap: 8px; padding: 10px; font-size: 12px; }
+.session-policy label { display: flex; align-items: center; gap: 6px; }
+.session-participants, .session-favorites { display: grid; gap: 10px; }
+.session-favorite { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--panel-border); border-radius: 5px; }
+.session-disclosure { border-top: 1px solid var(--panel-border); padding-top: 10px; }
+.session-peer-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.session-status { font-size: 11px; color: var(--muted); text-transform: capitalize; }
+.session-status-online { color: #15803d; }
+.session-status-disconnected { color: #b91c1c; }
+.session-toggle { white-space: nowrap; font-size: 12px; }
+.session-notice {
+  position: fixed; top: 54px; right: 12px; z-index: 90;
+  display: flex; align-items: center; gap: 8px; max-width: min(550px, calc(100vw - 24px));
+  padding: 10px 12px; border: 1px solid #d97706; border-radius: 6px;
+  background: var(--panel); color: var(--ink); white-space: normal;
+  font-size: 12px; box-shadow: 0 4px 20px rgba(15, 23, 42, .15);
+}
+.session-notice button { cursor: pointer; padding: 4px 7px; }
+.canvas-wrapper { width: 100%; height: 100%; position: relative; }
+.presence-overlay { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 5; }
+.presence-cursor { position: absolute; top: 0; left: 0; display: flex; align-items: flex-start; will-change: transform; }
+.presence-cursor span { margin-top: 16px; padding: 3px 6px; border-radius: 4px; color: white; font-size: 11px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presence-following { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--accent); border-radius: 6px; padding: 5px 10px; color: var(--accent); font-size: 11px; }
+.toolbar-brand { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1350px) { .toolbar-hint { display: none; } .session-toggle { margin-left: auto; } }

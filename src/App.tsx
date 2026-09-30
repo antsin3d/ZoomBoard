@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type CSSProperties } from "react";
+import { useShallow } from "zustand/react/shallow";
 import BoardCanvas, { useZoomControls } from "./canvas/BoardCanvas";
 import ZoomTimeline from "./panels/ZoomTimeline";
 import LayersPanel from "./panels/LayersPanel";
 import PropsPanel from "./panels/PropsPanel";
 import { useBoardStore } from "./whiteboard/store";
 import { TIERS } from "./whiteboard/tiers";
-import { deserializeBoard, serializeBoard } from "./whiteboard/document";
+import { deserializeBoard, serializeBoard, serializeBoardCopy } from "./whiteboard/document";
 import { openBoardFile, saveBoardFile } from "./whiteboard/fileIO";
 import { isTauri } from "@tauri-apps/api/core";
 import { breakpointColor, type ShapeType, type ToolMode } from "./whiteboard/model";
+import SessionPanel from "./collaboration/SessionPanel";
+import { useSessionStore } from "./collaboration/session";
+import { consumePendingInvite, INVITE_EVENT } from "./collaboration/deepLinks";
+import "./collaboration/collaboration.css";
 
 const SUPPORT_URL = "https://www.buymeacoffee.com/GetUp";
 
@@ -117,6 +122,15 @@ function ShapeMenu({
 }
 
 function Toolbar() {
+  const session = useSessionStore(useShallow((state) => ({
+    role: state.role, status: state.status, title: state.title,
+    allowEditing: state.allowEditing, allowDownload: state.allowDownload,
+    pending: state.pending, error: state.error,
+  })));
+  const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
+  const [inviteInput, setInviteInput] = useState("");
+  const guest = session.role === "guest";
+  const editable = !guest || (session.status === "online" && session.allowEditing);
   const {
     tool, setTool, zoom, activeTier, board, activeBreakpointId,
     _past, _future, undo, redo, replaceBoard,
@@ -132,7 +146,10 @@ function Toolbar() {
   const documentNameRef = useRef(documentName);
   const boardRef = useRef(board);
   const dirtyRef = useRef(dirty);
-  const lastSavedRef = useRef(serializeBoard(board));
+  // Never serialize a guest projection into the local document during render.
+  const lastSavedRef = useRef<string | null>(null);
+  if (lastSavedRef.current === null) lastSavedRef.current = serializeBoard(board);
+  const localDirtyRef = useRef(false);
   const fileBusyRef = useRef(fileBusy);
   const closingRef = useRef(false);
   documentPathRef.current = documentPath;
@@ -149,6 +166,7 @@ function Toolbar() {
 
   useEffect(() => {
     return useBoardStore.subscribe((state, prev) => {
+      if (useSessionStore.getState().role === "guest") return;
       if (state.board === prev.board) return;
       const isDirty = serializeBoard(state.board) !== lastSavedRef.current;
       dirtyRef.current = isDirty;
@@ -156,24 +174,70 @@ function Toolbar() {
     });
   }, []);
 
+  useEffect(() => useSessionStore.subscribe((state, prev) => {
+    if (state.role === "guest" && prev.role !== "guest") {
+      localDirtyRef.current = dirtyRef.current;
+    } else if (prev.role === "guest" && state.role !== "guest") {
+      dirtyRef.current = localDirtyRef.current;
+      setDirty(localDirtyRef.current);
+    } else if (state.role === "host" && state.invite !== prev.invite) {
+      // Host identity changes live in the file envelope, not in board elements.
+      const changed = serializeBoard(useBoardStore.getState().board) !== lastSavedRef.current;
+      dirtyRef.current = changed;
+      setDirty(changed);
+    }
+  }), []);
+
+  useEffect(() => {
+    const prefill = (value: string) => {
+      setInviteInput(value);
+      setSessionPanelOpen(true);
+    };
+    const readHash = () => {
+      const hash = window.location.hash;
+      if (hash.startsWith("#join=")) {
+        try { prefill(decodeURIComponent(hash.slice(6))); }
+        catch { prefill(hash.slice(6)); }
+      }
+    };
+    const onInvite = (event: Event) => {
+      const detail: unknown = (event as CustomEvent<unknown>).detail;
+      if (typeof detail === "string") {
+        consumePendingInvite();
+        prefill(detail);
+      }
+    };
+    readHash();
+    window.addEventListener("hashchange", readHash);
+    window.addEventListener(INVITE_EVENT, onInvite);
+    const pendingInvite = consumePendingInvite();
+    if (pendingInvite) prefill(pendingInvite);
+    return () => {
+      window.removeEventListener("hashchange", readHash);
+      window.removeEventListener(INVITE_EVENT, onInvite);
+    };
+  }, []);
+
   const activeTierObj = TIERS.find((t) => t.id === activeTier);
   // Use the store's zone-aware activeBreakpointId — not a manual cascade lookup.
   const activeBp = board.breakpoints.find((bp) => bp.id === activeBreakpointId);
 
   const handleToolClick = useCallback((nextTool: ToolMode) => {
+    if (!editable && nextTool !== "select") return;
     if (nextTool === "connector" && connectSelected()) {
       setTool("select");
       return;
     }
     setTool(nextTool);
-  }, [connectSelected, setTool]);
+  }, [connectSelected, setTool, editable]);
 
   const handleOpen = useCallback(async () => {
-    if (fileBusy) return;
+    if (fileBusyRef.current || useSessionStore.getState().role !== "idle") return;
+    fileBusyRef.current = true;
     setFileBusy(true);
     try {
       const opened = await openBoardFile();
-      if (!opened) return;
+      if (!opened || useSessionStore.getState().role !== "idle") return;
       const nextBoard = deserializeBoard(opened.contents);
       replaceBoard(nextBoard);
       setDocumentPath(opened.path);
@@ -182,27 +246,38 @@ function Toolbar() {
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "The board could not be opened.");
     } finally {
+      fileBusyRef.current = false;
       setFileBusy(false);
     }
-  }, [fileBusy, markClean, replaceBoard]);
+  }, [markClean, replaceBoard]);
 
   const handleSave = useCallback(async (): Promise<boolean> => {
     if (fileBusyRef.current) return false;
+    const currentSession = useSessionStore.getState();
+    if (currentSession.role === "guest" && (currentSession.status !== "online" || !currentSession.allowDownload)) return false;
     setFileBusy(true);
     fileBusyRef.current = true;
     try {
       const currentBoard = boardRef.current;
+      if (currentSession.role === "guest") {
+        const copy = serializeBoardCopy(currentBoard);
+        return !!await saveBoardFile(copy, null, `${currentSession.title.replace(/\.board$/i, "").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_") || "Shared board"} copy.board`);
+      }
+      const contents = serializeBoard(currentBoard);
       const savedPath = await saveBoardFile(
-        serializeBoard(currentBoard),
+        contents,
         documentPathRef.current,
         documentNameRef.current,
       );
       if (!savedPath) return false;
-      setDocumentPath(savedPath);
+      setDocumentPath(isTauri() ? savedPath : null);
       setDocumentName(savedPath.split(/[\\/]/).pop() ?? documentNameRef.current);
-      documentPathRef.current = savedPath;
+      documentPathRef.current = isTauri() ? savedPath : null;
       documentNameRef.current = savedPath.split(/[\\/]/).pop() ?? documentNameRef.current;
-      markClean(currentBoard);
+      lastSavedRef.current = contents;
+      const changedWhileSaving = serializeBoard(useBoardStore.getState().board) !== contents;
+      dirtyRef.current = changedWhileSaving;
+      setDirty(changedWhileSaving);
       return true;
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "The board could not be saved.");
@@ -211,7 +286,7 @@ function Toolbar() {
       setFileBusy(false);
       fileBusyRef.current = false;
     }
-  }, [markClean]);
+  }, []);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -251,6 +326,13 @@ function Toolbar() {
         if (!dirtyRef.current || closingRef.current) return;
         event.preventDefault();
         if (fileBusyRef.current) return;
+        if (useSessionStore.getState().role === "guest") {
+          await message("Your local board has unsaved changes. Leave the session to restore and save your local work before closing.", {
+            title: "Unsaved local work",
+            kind: "warning",
+          });
+          return;
+        }
 
         const answer = await message(
           `Do you want to save changes to "${documentNameRef.current}"?`,
@@ -268,7 +350,9 @@ function Toolbar() {
         if (answer === "Cancel") return;
         if (answer === "Save") {
           const saved = await handleSave();
-          if (!saved) return;
+          // Remote edits can arrive while the native save dialog/write is open.
+          // Never close over a newer board than the snapshot actually saved.
+          if (!saved || dirtyRef.current) return;
         }
 
         closingRef.current = true;
@@ -283,20 +367,20 @@ function Toolbar() {
     };
   }, [handleSave]);
 
-  const displayName = documentName.replace(/\.board$/i, "");
+  const displayName = guest ? `${session.title} · Guest` : documentName.replace(/\.board$/i, "");
 
   return (
     <div className="toolbar">
-      <div className="toolbar-brand" title={documentPath ?? documentName}>
-        Whiteboard · {displayName}{dirty ? " *" : ""}
+      <div className="toolbar-brand" title={guest ? `Local board preserved: ${documentName}${dirty ? " (unsaved)" : ""}` : documentPath ?? documentName}>
+        Whiteboard · {displayName}{dirty && !guest ? " *" : ""}
       </div>
 
       <div className="toolbar-undo">
-        <button className="tool-btn" onClick={() => void handleOpen()} disabled={fileBusy} title="Open (Ctrl+O)">
+        <button className="tool-btn" onClick={() => void handleOpen()} disabled={fileBusy || session.role !== "idle"} title={session.role !== "idle" ? "Leave the session before opening another board" : "Open (Ctrl+O)"}>
           Open
         </button>
-        <button className="tool-btn" onClick={() => void handleSave()} disabled={fileBusy} title="Save (Ctrl+S)">
-          Save
+        <button className="tool-btn" onClick={() => void handleSave()} disabled={fileBusy || (guest && (session.status !== "online" || !session.allowDownload))} title={guest ? "Download an independent copy (Ctrl+S)" : "Save (Ctrl+S)"}>
+          {guest ? "Save copy" : "Save"}
         </button>
       </div>
 
@@ -312,12 +396,13 @@ function Toolbar() {
             {t.label}
           </button>
         ))}
-        <ShapeMenu tool={tool} onSelect={handleToolClick} />
+        {editable && <ShapeMenu tool={tool} onSelect={handleToolClick} />}
         {TOOLS.slice(1).map((t) => (
           <button
             key={t.id}
             className={`tool-btn${tool === t.id ? " tool-active" : ""}`}
             title={t.title}
+            disabled={!editable}
             onClick={() => handleToolClick(t.id)}
           >
             {t.label}
@@ -330,7 +415,7 @@ function Toolbar() {
         <button
           className="tool-btn"
           onClick={undo}
-          disabled={_past.length === 0}
+          disabled={!editable || _past.length === 0}
           title="Undo (Ctrl+Z)"
         >
           ↩
@@ -338,7 +423,7 @@ function Toolbar() {
         <button
           className="tool-btn"
           onClick={redo}
-          disabled={_future.length === 0}
+          disabled={!editable || _future.length === 0}
           title="Redo (Ctrl+Y)"
         >
           ↪
@@ -370,7 +455,18 @@ function Toolbar() {
 
       {/* Keyboard shortcut hint */}
       <div className="toolbar-hint">V · R · T · S · F · C drag to connect · Ctrl+G group · Shift+click multi</div>
+      <button type="button" className={`tool-btn session-toggle${sessionPanelOpen ? " tool-active" : ""}`} aria-expanded={sessionPanelOpen} onClick={() => setSessionPanelOpen((open) => !open)}>
+        {session.role === "idle" ? "Share / Join" : `${session.role === "host" ? "Hosting" : "Session"} · ${session.status}`}
+      </button>
       <SupportButton />
+      {session.error && !sessionPanelOpen && (
+        <div className="session-notice" role="alert">
+          <span>{session.error}</span>
+          <button type="button" onClick={() => setSessionPanelOpen(true)}>Session</button>
+          <button type="button" onClick={() => useSessionStore.setState({ error: null })} aria-label="Dismiss session notice">×</button>
+        </div>
+      )}
+      {sessionPanelOpen && <SessionPanel documentName={documentName} fileBusy={fileBusy} inviteInput={inviteInput} onClose={() => setSessionPanelOpen(false)} />}
     </div>
   );
 }
@@ -378,13 +474,15 @@ function Toolbar() {
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const editingLocked = useSessionStore((state) =>
+    state.role === "guest" && (state.status !== "online" || !state.allowEditing));
   return (
     <div className="app">
       <div className="app-toolbar"><Toolbar /></div>
-      <div className="app-layers"><LayersPanel /></div>
+      <div className="app-layers" inert={editingLocked}><LayersPanel /></div>
       <div className="app-canvas"><BoardCanvas /></div>
-      <div className="app-props"><PropsPanel /></div>
-      <div className="app-timeline"><ZoomTimeline /></div>
+      <div className="app-props" inert={editingLocked}><PropsPanel /></div>
+      <div className="app-timeline" inert={editingLocked}><ZoomTimeline /></div>
     </div>
   );
 }

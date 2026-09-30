@@ -49,6 +49,21 @@ Use **Open** (`Ctrl/Cmd+O`) and **Save** (`Ctrl/Cmd+S`) in the toolbar. Desktop
 builds use native file dialogs and save a versioned Yjs-backed `.board` file.
 Browser development uses file upload/download as a fallback.
 
+## Remote collaboration (preview)
+
+Use **Share / Join** to host a board or paste an invite link/code. Sessions
+include shared cursors, follow, local favorites with reachability checks, and
+host-controlled editing and Save/Copy permissions. Save after first sharing
+to preserve the reusable invite in your board file.
+
+No servers to operate: public PeerJS signaling and STUN help establish direct
+WebRTC connections. There is no TURN fallback, so some networks cannot connect.
+Guests receive board data even when Save/Copy is disabled; this is not copy
+protection. See [collaboration details and limits](docs/collaboration.md).
+
+Run `pnpm test` for automated protocol/lifecycle tests and `pnpm build` for the
+TypeScript and production frontend build.
+
 ## License
 
 MIT (intended).
