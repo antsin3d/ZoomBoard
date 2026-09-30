@@ -125,6 +125,13 @@ function validateFileStructure(board: Board): void {
       if (!isId(key)) invalid();
       checkState(frame, true); // Dormant presentation IDs are intentional.
     }
+    if (el.regionDefaults !== undefined) {
+      if (!isObject(el.regionDefaults)) invalid();
+      for (const [key, frame] of Object.entries(el.regionDefaults)) {
+        if (!isId(key)) invalid();
+        checkState(frame, true);
+      }
+    }
     for (const key of ["parentId", "connectorStartId", "connectorEndId"] as const) {
       if (el[key] !== undefined && (!isId(el[key]) || el[key] === el.id)) invalid();
     }

@@ -115,10 +115,10 @@ export function zoomForPresentation(board: Board, key: string): number {
     : board.breakpoints.find((bp) => bp.id === key)?.zoom ?? BASE_ZOOM;
 }
 
-export function stateForPresentation(_board: Board, element: BoardElement, key: string): ElementState {
+export function stateForPresentation(board: Board, element: BoardElement, key: string): ElementState {
   // A presentation ID is authoritative: 1x can now lie in any region,
   // and looking up the baseline by zoom would accidentally select that region.
-  return presentationState(element, key);
+  return presentationState(element, key, board.breakpoints);
 }
 
 export function worldPositionForPresentation(
@@ -1342,7 +1342,9 @@ export function rebaseForParent(
 
   for (const key of presentationKeys(board)) {
     const frame = keyframes[key];
-    const pinned = typeof frame?.x === "number" || typeof frame?.y === "number";
+    const regionDefault = element.regionDefaults?.[key];
+    const pinned = typeof frame?.x === "number" || typeof frame?.y === "number"
+      || typeof regionDefault?.x === "number" || typeof regionDefault?.y === "number";
     if (
       !pinned &&
       !divergesFromBase(board, oldParent, key) &&

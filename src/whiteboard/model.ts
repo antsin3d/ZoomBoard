@@ -259,6 +259,11 @@ export interface BoardElement {
   /** Truth at 1x zoom / no active breakpoint. */
   base: ElementState;
   /**
+   * Region-local defaults captured when a region is split. These preserve the
+   * picture without counting as user-authored keyframes/customizations.
+   */
+  regionDefaults?: Record<string, Partial<ElementState>>;
+  /**
    * Sparse overrides per breakpoint.
    * Only properties that differ from base are stored.
    * Key is Breakpoint.id.
@@ -306,6 +311,7 @@ export function activeVariant(
 export function presentationState(
   element: BoardElement,
   presentationKey: string,
+  breakpoints?: readonly Breakpoint[],
 ): ElementState {
   const basePresentation = {
     ...DEFAULT_STATE,
@@ -317,8 +323,11 @@ export function presentationState(
     ? { ...basePresentation, ...variant.patch }
     : basePresentation;
   if (presentationKey === BASE_KEYFRAME_ID) return withVariant;
+  const regionDefault = breakpoints && isRegionTimeline(breakpoints)
+    ? element.regionDefaults?.[presentationKey]
+    : undefined;
   const overrides = element.keyframes[presentationKey];
-  return overrides ? { ...withVariant, ...overrides } : withVariant;
+  return { ...withVariant, ...regionDefault, ...overrides };
 }
 
 // ─── Interpolation helpers (used by resolveState) ─────────────────────────────
@@ -431,7 +440,7 @@ export function resolveStateDirect(
   zoom: number,
   breakpoints: Breakpoint[],
 ): ElementState {
-  return presentationState(element, presentationKeyForZoom(zoom, breakpoints));
+  return presentationState(element, presentationKeyForZoom(zoom, breakpoints), breakpoints);
 }
 
 /**
@@ -465,8 +474,8 @@ export function resolveState(
       if (bp.transition === "snap") continue;
       const { start, end } = sortedRegionTweenBounds(sorted, index);
       if (end <= start || zoom < start || zoom > end) continue;
-      const from = presentationState(element, sorted[index - 1].id);
-      const to = presentationState(element, bp.id);
+      const from = presentationState(element, sorted[index - 1].id, sorted);
+      const to = presentationState(element, bp.id, sorted);
       if (zoom <= start) return from;
       if (zoom >= end) return to;
       const t = (Math.log2(zoom) - Math.log2(start)) / (Math.log2(end) - Math.log2(start));
@@ -490,7 +499,7 @@ export function resolveState(
     const stateWithout = resolveStateDirect(element, zoom, bpsWithout);
 
     // State fully inside this breakpoint (includes its assigned variant).
-    const stateWith = presentationState(element, bp.id);
+    const stateWith = presentationState(element, bp.id, breakpoints);
 
     // Below-base bp (e.g. Overview 0.25×):
     //   t=0 (low zoom end) → breakpoint active; t=1 (high zoom end) → base side

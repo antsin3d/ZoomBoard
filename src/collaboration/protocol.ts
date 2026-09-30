@@ -265,7 +265,7 @@ function breakpoint(value: unknown): Breakpoint {
 }
 function element(value: unknown): BoardElement {
   const input = record(value);
-  keys(input, ["id", "type", "name", "parentId", "connectorStartId", "connectorEndId", "connectorStartAnchor", "connectorEndAnchor", "variants", "variantAssignments", "base", "keyframes"]);
+  keys(input, ["id", "type", "name", "parentId", "connectorStartId", "connectorEndId", "connectorStartAnchor", "connectorEndAnchor", "variants", "variantAssignments", "base", "regionDefaults", "keyframes"]);
   const result: BoardElement = {
     id: id(input.id), type: enumValue(input.type, ["rect", "ellipse", "triangle", "diamond", "hexagon", "star", "text", "sticky", "frame", "connector", "image", "group"]),
     name: text(input.name), base: state(input.base, false) as ElementState, keyframes: {},
@@ -282,6 +282,14 @@ function element(value: unknown): BoardElement {
   const frames = record(input.keyframes);
   if (Object.keys(frames).length > MAX_BREAKPOINTS + 1) fail("Too many keyframes.");
   for (const [key, patch] of Object.entries(frames)) result.keyframes[id(key)] = state(patch, true);
+  if (input.regionDefaults !== undefined) {
+    const defaults = record(input.regionDefaults);
+    if (Object.keys(defaults).length > MAX_BREAKPOINTS) fail("Too many region defaults.");
+    result.regionDefaults = {};
+    for (const [key, patch] of Object.entries(defaults)) {
+      result.regionDefaults[id(key)] = state(patch, true);
+    }
+  }
   if (input.variants !== undefined) {
     result.variants = array(input.variants, 256).map((value) => {
       const variant = record(value);

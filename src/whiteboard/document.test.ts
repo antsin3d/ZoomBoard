@@ -38,7 +38,11 @@ describe("region document persistence", () => {
   const second = { ...first, id: "second", zoom: 1, tweenIn: 0, tweenOut: 0.5 };
   const regionBoard: Board = {
     ...board, breakpoints: [first, second],
-    elements: [{ ...board.elements[0], keyframes: { first: { x: 10 }, second: { y: 20 } } }],
+    elements: [{
+      ...board.elements[0],
+      regionDefaults: { second: { fill: "#abcdef" } },
+      keyframes: { first: { x: 10 }, second: { y: 20 } },
+    }],
   };
 
   it("round trips region IDs, independent overrides and tween metadata unchanged", () => {

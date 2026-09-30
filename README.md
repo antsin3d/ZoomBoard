@@ -84,7 +84,9 @@ the reusable invite identity is stored in that board file.
   the blend for a faster change or widen it for a slower change.
 - The properties panel follows the current region—there are no breakpoint
   tabs or variant controls. Gold dots mark properties customized from the
-  object's original values; click a dot to reset that property.
+  object's original values; click a dot to reset that property. Creating an
+  object or splitting a region does not add keyframes: a property gets one only
+  when it is actually edited in that region.
 - Shift+click adjacent regions to select a run, then click **Merge** to combine
   them into the leftmost region's appearance (Escape clears the selection).
   Splits, property edits, merges, and divider/tween drags support undo/redo.

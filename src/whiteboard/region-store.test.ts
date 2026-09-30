@@ -34,7 +34,9 @@ describe("region editing", () => {
     const right = store().addBreakpoint(1);
     expect(right).not.toBe("");
     expect(store().activeBreakpointId).toBe(right);
-    expect(presentationState(element(), right)).toEqual(presentationState(element(), left));
+    expect(element().keyframes[right]).toBeUndefined();
+    expect(presentationState(element(), right, store().board.breakpoints))
+      .toEqual(presentationState(element(), left, store().board.breakpoints));
     store().setKeyframe("shape", right, { fill: "#0000ff", content: "Different" });
     expect(presentationState(element(), left)).toMatchObject({ fill: "#ff0000", content: "Same" });
     expect(presentationState(element(), right)).toMatchObject({ fill: "#0000ff", content: "Different" });
@@ -45,8 +47,30 @@ describe("region editing", () => {
     const middle = store().addBreakpoint(0.5);
     store().setKeyframe("shape", middle, { opacity: 0.3, content: "Middle" });
     const right = store().addBreakpoint(2);
-    expect(presentationState(element(), right)).toMatchObject({ opacity: 0.3, content: "Middle" });
+    expect(element().keyframes[right]).toBeUndefined();
+    expect(presentationState(element(), right, store().board.breakpoints))
+      .toMatchObject({ opacity: 0.3, content: "Middle" });
     expect(presentationState(element(), firstId()).opacity).toBe(1);
+  });
+
+  it("creates defaults without a keyframe and writes only the region that is edited", () => {
+    const left = firstId();
+    const right = store().addBreakpoint(1);
+    const id = store().addElement("rect", { x: 240, y: 180, fill: "#abcdef" });
+    const created = () => store().board.elements.find((el) => el.id === id)!;
+
+    expect(store().activeBreakpointId).toBe(right);
+    expect(created().base).toMatchObject({ x: 240, y: 180, fill: "#abcdef" });
+    expect(created().keyframes).toEqual({});
+
+    store().setKeyframe(id, right, { fill: "#123456" });
+    expect(Object.keys(created().keyframes)).toEqual([right]);
+    expect(created().keyframes[right]).toEqual({ fill: "#123456" });
+    expect(created().keyframes[left]).toBeUndefined();
+
+    store().setZoom(0.25);
+    store().setKeyframe(id, left, { opacity: 0.5 });
+    expect(new Set(Object.keys(created().keyframes))).toEqual(new Set([left, right]));
   });
 
   it("copies selected objects' settings from one region and pastes them into another", () => {

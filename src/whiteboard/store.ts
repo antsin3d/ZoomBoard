@@ -104,6 +104,18 @@ function cloneClipboard(
           : { ...frame },
       ]),
     );
+    const offsetRegionDefaults = el.regionDefaults && Object.fromEntries(
+      Object.entries(el.regionDefaults).map(([key, frame]) => [
+        key,
+        isRoot
+          ? {
+              ...frame,
+              ...(typeof frame.x === "number" ? { x: frame.x + dx } : {}),
+              ...(typeof frame.y === "number" ? { y: frame.y + dy } : {}),
+            }
+          : { ...frame },
+      ]),
+    );
 
     return {
       ...el,
@@ -126,6 +138,7 @@ function cloneClipboard(
         y: el.base.y + (isRoot ? dy : 0),
       },
       keyframes: offsetKeyframes,
+      ...(offsetRegionDefaults ? { regionDefaults: offsetRegionDefaults } : {}),
     };
   });
 
@@ -397,7 +410,9 @@ export const useBoardStore = create<BoardStore>()(
         const key = activeBreakpointId ?? BASE_KEYFRAME_ID;
         const states: Record<string, ElementState> = {};
         for (const el of board.elements) {
-          if (selectedIds.includes(el.id)) states[el.id] = structuredClone(presentationState(el, key));
+          if (selectedIds.includes(el.id)) {
+            states[el.id] = structuredClone(presentationState(el, key, board.breakpoints));
+          }
         }
         const count = Object.keys(states).length;
         if (count) set({ regionSettingsClipboard: { sourceRegionId: key, states } });
@@ -417,7 +432,13 @@ export const useBoardStore = create<BoardStore>()(
           if (!targets.has(el.id)) return el;
           // Replace the whole region patch so the destination matches exactly,
           // including properties the source left at their original values.
-          const patch = sparseState({ ...DEFAULT_STATE, ...el.base }, copied[el.id]);
+          const destinationDefault = {
+            ...DEFAULT_STATE,
+            ...el.base,
+            ...(el.keyframes[BASE_KEYFRAME_ID] ?? {}),
+            ...(isRegionTimeline(board.breakpoints) ? el.regionDefaults?.[key] : {}),
+          };
+          const patch = sparseState(destinationDefault, copied[el.id]);
           if (JSON.stringify(patch) === JSON.stringify(el.keyframes[key] ?? {})) return el;
           return { ...el, keyframes: { ...el.keyframes, [key]: structuredClone(patch) } };
         });
@@ -1185,6 +1206,9 @@ export const useBoardStore = create<BoardStore>()(
                 keyframes: Object.fromEntries(
                   Object.entries(el.keyframes).map(([key, frame]) => [key, swapFrame(frame)]),
                 ),
+                regionDefaults: el.regionDefaults && Object.fromEntries(
+                  Object.entries(el.regionDefaults).map(([key, frame]) => [key, swapFrame(frame)]),
+                ),
               };
             }),
           },
@@ -1227,8 +1251,8 @@ export const useBoardStore = create<BoardStore>()(
         if (!canEditBoard() || !Number.isFinite(zoom)) return "";
         const { board } = get();
         if (isRegionTimeline(board.breakpoints)) {
-          // Cuts copy the source clip, so inserting a divider never changes
-          // the picture. Each side can then be edited independently.
+          // Untouched properties inherit from the regions to their left.
+          // Splitting therefore never manufactures object keyframes.
           const cut = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
           if (!canCutRegion(board.breakpoints, cut)) return "";
           const source = activeBreakpoint(cut, board.breakpoints)!;
@@ -1245,10 +1269,25 @@ export const useBoardStore = create<BoardStore>()(
             board: {
               ...board,
               breakpoints,
-              elements: board.elements.map((el) => ({
-                ...el,
-                keyframes: { ...el.keyframes, [id]: structuredClone(el.keyframes[source.id] ?? {}) },
-              })),
+              elements: board.elements.map((el) => {
+                const base = {
+                  ...DEFAULT_STATE,
+                  ...el.base,
+                  ...(el.keyframes[BASE_KEYFRAME_ID] ?? {}),
+                };
+                const snapshot = sparseState(
+                  base,
+                  presentationState(el, source.id, board.breakpoints),
+                );
+                if (Object.keys(snapshot).length === 0) return el;
+                return {
+                  ...el,
+                  regionDefaults: {
+                    ...el.regionDefaults,
+                    [id]: structuredClone(snapshot),
+                  },
+                };
+              }),
             },
             activeBreakpointId: activeBreakpoint(get().zoom, breakpoints)?.id,
           });
@@ -1289,8 +1328,14 @@ export const useBoardStore = create<BoardStore>()(
             breakpoints: s.board.breakpoints.filter((bp) => bp.id !== id),
             elements: s.board.elements.map((el) => {
               const keyframes = { ...el.keyframes };
+              const regionDefaults = { ...el.regionDefaults };
               delete keyframes[id];
-              return { ...el, keyframes };
+              delete regionDefaults[id];
+              return {
+                ...el,
+                keyframes,
+                ...(Object.keys(regionDefaults).length ? { regionDefaults } : { regionDefaults: undefined }),
+              };
             }),
           },
           activeBreakpointId: activeBreakpoint(
@@ -1319,10 +1364,19 @@ export const useBoardStore = create<BoardStore>()(
             ...board,
             breakpoints,
             elements: board.elements.map((el) => {
-              if (!Object.keys(el.keyframes).some((key) => doomed.has(key))) return el;
+              if (
+                !Object.keys(el.keyframes).some((key) => doomed.has(key))
+                && !Object.keys(el.regionDefaults ?? {}).some((key) => doomed.has(key))
+              ) return el;
               const keyframes = { ...el.keyframes };
+              const regionDefaults = { ...el.regionDefaults };
               for (const id of doomed) delete keyframes[id];
-              return { ...el, keyframes };
+              for (const id of doomed) delete regionDefaults[id];
+              return {
+                ...el,
+                keyframes,
+                ...(Object.keys(regionDefaults).length ? { regionDefaults } : { regionDefaults: undefined }),
+              };
             }),
           },
           activeBreakpointId: activeBreakpoint(zoom, breakpoints)?.id,

@@ -3,7 +3,6 @@ import { useBoardStore } from "../whiteboard/store";
 import { pickImageFile } from "../whiteboard/fileIO";
 import {
   BASE_KEYFRAME_ID,
-  DEFAULT_STATE,
   FONT_OPTIONS,
   normalizeConnectorStyle,
   presentationState,
@@ -33,20 +32,13 @@ const PROPERTY_LABELS: Partial<Record<keyof ElementState, string>> = {
 };
 
 function CustomizationDot({
-  property, state, base, onReset,
+  property, customized, onReset,
 }: {
   property: keyof ElementState;
-  state: ElementState;
-  base: ElementState;
+  customized: boolean;
   onReset: (key: keyof ElementState) => void;
 }) {
-  const value = state[property] ?? DEFAULT_STATE[property];
-  const original = base[property] ?? DEFAULT_STATE[property];
-  const differs = property === "connectorStyle"
-    ? normalizeConnectorStyle(state.connectorStyle ?? DEFAULT_STATE.connectorStyle)
-      !== normalizeConnectorStyle(base.connectorStyle ?? DEFAULT_STATE.connectorStyle)
-    : !Object.is(value, original);
-  if (!differs) return <span className="region-customization-placeholder" aria-hidden="true" />;
+  if (!customized) return <span className="region-customization-placeholder" aria-hidden="true" />;
   const label = PROPERTY_LABELS[property] ?? property;
   return (
     <button
@@ -364,6 +356,7 @@ function ConnectorEndpointsEditor({
 interface StateEditorProps {
   el: BoardElement;
   state: ElementState;
+  customizedState: Partial<ElementState>;
   presentationKey: string;
   onChangeKeyframe: (bpId: string, patch: Partial<ElementState>) => void;
   onResetKey: (key: keyof ElementState) => void;
@@ -372,7 +365,7 @@ interface StateEditorProps {
 }
 
 function StateEditor({
-  el, state, presentationKey, onChangeKeyframe, onResetKey,
+  el, state, customizedState, presentationKey, onChangeKeyframe, onResetKey,
   autoFocusText, onTextAutoFocused,
 }: StateEditorProps) {
   const change = (patch: Partial<ElementState>) => {
@@ -391,7 +384,13 @@ function StateEditor({
   };
 
   function OverrideDot({ k }: { k: keyof ElementState }) {
-    return <CustomizationDot property={k} state={state} base={el.base} onReset={onResetKey} />;
+    return (
+      <CustomizationDot
+        property={k}
+        customized={Object.prototype.hasOwnProperty.call(customizedState, k)}
+        onReset={onResetKey}
+      />
+    );
   }
 
   return (
@@ -768,7 +767,7 @@ export default function PropsPanel() {
 
   const regionKey = activeBreakpointId ?? BASE_KEYFRAME_ID;
   // Resolve the current region directly; canvas interpolation is not editable state.
-  const editorState = presentationState(el, regionKey);
+  const editorState = presentationState(el, regionKey, board.breakpoints);
 
   return (
     <div className="props-panel">
@@ -783,6 +782,7 @@ export default function PropsPanel() {
         <StateEditor
           el={el}
           state={editorState}
+          customizedState={el.keyframes[regionKey] ?? {}}
           presentationKey={regionKey}
           onChangeKeyframe={(bpId, patch) => setKeyframe(el.id, bpId, patch)}
           onResetKey={(key) => clearKeyframeKey(el.id, regionKey, key)}
