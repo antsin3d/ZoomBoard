@@ -4,6 +4,7 @@ An open-source, **offline-first serverless collaborative desktop whiteboard** fo
 Miro-like design and interaction, plus a features Miro never shipped.
 
 https://github.com/antsin3d/ZoomBoard/blob/master/release/Whiteboard.exe
+
 Watch the video walkthrough: https://youtu.be/M9QP_PJwjWo
 [![Watch the video](Zoomboard_Cap01.png)](https://youtu.be/M9QP_PJwjWo)
 
