@@ -1,10 +1,10 @@
 # Whiteboard
 
-An open-source, **offline-first desktop whiteboard** for Windows & macOS —
-Miro-like design and interaction, plus a feature Miro never shipped:
+An open-source, **offline-first serverless collaborative desktop whiteboard** for Windows —
+Miro-like design and interaction, plus a features Miro never shipped.
 
 https://github.com/antsin3d/ZoomBoard/blob/master/release/Whiteboard.exe
-
+Watch the video walkthrough: https://youtu.be/M9QP_PJwjWo
 [![Watch the video](Zoomboard_Cap01.png)](https://youtu.be/M9QP_PJwjWo)
 
 ### Zoom Regions
@@ -12,8 +12,6 @@ https://github.com/antsin3d/ZoomBoard/blob/master/release/Whiteboard.exe
 Control how content appears at different zoom levels — *responsive design on the
 zoom axis*. Explore a data hierarchy by zooming through levels of abstraction
 (e.g. Themes → Insights → Samples).
-
-![Zoom breakpoints example](Zoomboard_Cap01.png)
 
 ## Status
 
