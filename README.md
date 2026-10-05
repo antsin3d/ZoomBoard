@@ -5,7 +5,7 @@ Miro-like design and interaction, plus a feature Miro never shipped:
 
 https://github.com/antsin3d/ZoomBoard/blob/master/release/Whiteboard.exe
 
-https://youtu.be/M9QP_PJwjWo
+[![Watch the video](Zoomboard_Cap01.png)](https://youtu.be/M9QP_PJwjWo)
 
 ### Zoom Regions
 
