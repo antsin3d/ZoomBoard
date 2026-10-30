@@ -51,6 +51,16 @@ describe("entity patches", () => {
     expect(applyPatch(before, createPatch(before, after))).toEqual(after);
   });
 
+  it("patches auto opacity independently and rejects conflicting toggles", () => {
+    const before = board(el("a"));
+    const after = { ...before, autoOpacity: true };
+    const patch = createPatch(before, after)!;
+    expect(patch.autoOpacity).toEqual({ before: false, after: true });
+    expect(applyPatch(before, patch)).toEqual(after);
+    expect(() => applyPatch(after, patch)).toThrow(/Conflict/);
+    expect(() => validateBoard({ ...before, autoOpacity: "yes" })).toThrow();
+  });
+
   it("diffs breakpoints independently and validates references after atomic removal", () => {
     const bp = { id: "bp", zoom: 2, name: "Detail", transition: "snap" as const, transitionRange: 0 };
     const before: Board = { breakpoints: [bp], elements: [{ ...el("a"), keyframes: { bp: { x: 5 } } }] };

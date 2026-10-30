@@ -315,10 +315,14 @@ function element(value: unknown): BoardElement {
 export function validateBoard(value: unknown): Board {
   bounded(value);
   const input = record(value);
-  keys(input, ["elements", "breakpoints"]);
-  const result = {
+  keys(input, ["elements", "breakpoints", "autoOpacity"]);
+  if (input.autoOpacity !== undefined && typeof input.autoOpacity !== "boolean") {
+    fail("Invalid auto opacity mode.");
+  }
+  const result: Board = {
     breakpoints: array(input.breakpoints, MAX_BREAKPOINTS).map(breakpoint),
     elements: array(input.elements, MAX_ELEMENTS).map(element),
+    ...(input.autoOpacity !== undefined ? { autoOpacity: input.autoOpacity as boolean } : {}),
   };
   unique(result.breakpoints.map((bp) => bp.id));
   validateRegionTimeline(result.breakpoints);
@@ -351,6 +355,7 @@ export interface OrderChange { before: string[]; after: string[] }
 export interface BoardPatch {
   elements: EntityChange<BoardElement>[];
   breakpoints: EntityChange<Breakpoint>[];
+  autoOpacity?: { before: boolean; after: boolean };
   elementOrder?: OrderChange;
   breakpointOrder?: OrderChange;
 }
@@ -375,10 +380,16 @@ function orderDiff(before: { id: string }[], after: { id: string }[]): OrderChan
 export function createPatch(before: Board, after: Board): BoardPatch | null {
   const left = validateBoard(before), right = validateBoard(after);
   const patch: BoardPatch = { elements: diff(left.elements, right.elements), breakpoints: diff(left.breakpoints, right.breakpoints) };
+  if (Boolean(left.autoOpacity) !== Boolean(right.autoOpacity)) {
+    patch.autoOpacity = {
+      before: Boolean(left.autoOpacity),
+      after: Boolean(right.autoOpacity),
+    };
+  }
   const elementOrder = orderDiff(left.elements, right.elements), breakpointOrder = orderDiff(left.breakpoints, right.breakpoints);
   if (elementOrder) patch.elementOrder = elementOrder;
   if (breakpointOrder) patch.breakpointOrder = breakpointOrder;
-  if (!patch.elements.length && !patch.breakpoints.length && !elementOrder && !breakpointOrder) return null;
+  if (!patch.elements.length && !patch.breakpoints.length && !patch.autoOpacity && !elementOrder && !breakpointOrder) return null;
   bounded(patch);
   return patch;
 }
@@ -457,9 +468,20 @@ export function applyPatch(current: Board, patch: unknown): Board {
   const board = validateBoard(current);
   bounded(patch);
   const input = record(patch);
-  keys(input, ["elements", "breakpoints", "elementOrder", "breakpointOrder"]);
+  keys(input, ["elements", "breakpoints", "autoOpacity", "elementOrder", "breakpointOrder"]);
+  let autoOpacity = board.autoOpacity;
+  if (input.autoOpacity !== undefined) {
+    const change = record(input.autoOpacity);
+    keys(change, ["before", "after"]);
+    if (typeof change.before !== "boolean" || typeof change.after !== "boolean") {
+      fail("Invalid auto opacity change.");
+    }
+    if (Boolean(board.autoOpacity) !== change.before) fail("Conflict on auto opacity mode.");
+    autoOpacity = change.after;
+  }
   return validateBoard({
     elements: applyEntities(board.elements, input.elements, input.elementOrder, element, MAX_ELEMENTS),
     breakpoints: applyEntities(board.breakpoints, input.breakpoints, input.breakpointOrder, breakpoint, MAX_BREAKPOINTS),
+    ...(autoOpacity !== undefined ? { autoOpacity } : {}),
   });
 }

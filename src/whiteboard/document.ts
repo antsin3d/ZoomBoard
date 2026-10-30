@@ -4,7 +4,7 @@ import { validateRegionTimeline } from "./regions";
 import { createIdentity, signChallenge, verifyChallenge, validateBoard, validateHostIdentity, type HostIdentity } from "../collaboration/protocol";
 
 const DOCUMENT_FORMAT = "ai.univrs.whiteboard";
-const DOCUMENT_VERSION = 2;
+const DOCUMENT_VERSION = 3;
 const BOARD_KEY = "board";
 const DOCUMENT_MAP = "document";
 const LOCAL_ORIGIN = Symbol("whiteboard-local");
@@ -18,7 +18,7 @@ let verifiedIdentity: HostIdentity | undefined;
 
 interface BoardFileEnvelope {
   format: typeof DOCUMENT_FORMAT;
-  version: 1 | typeof DOCUMENT_VERSION;
+  version: 1 | 2 | typeof DOCUMENT_VERSION;
   yjsUpdate: string;
   collaboration?: HostIdentity;
 }
@@ -66,6 +66,7 @@ function validateFileStructure(board: Board): void {
   const isObject = (value: unknown): value is Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value);
   const unsafe = new Set(["__proto__", "prototype", "constructor"]);
+  if (board.autoOpacity !== undefined && typeof board.autoOpacity !== "boolean") invalid();
   const isId = (value: unknown): value is string =>
     typeof value === "string" && value.length > 0 && !unsafe.has(value);
   // JSON has no object cycles. Walk iteratively to avoid imposing network depth
@@ -265,13 +266,18 @@ export function syncBoardDocument(board: Board): void {
   liveDoc.transact(() => liveMap.set(BOARD_KEY, boardJson), LOCAL_ORIGIN);
 }
 
+function documentVersion(board: Board): BoardFileEnvelope["version"] {
+  if (board.autoOpacity) return DOCUMENT_VERSION;
+  return isRegionTimeline(board.breakpoints) ? 2 : 1;
+}
+
 /** Serialize the live session document into a versioned single-file envelope. */
 export function serializeBoard(board: Board): string {
   syncBoardDocument(board);
 
   const envelope: BoardFileEnvelope = {
     format: DOCUMENT_FORMAT,
-    version: isRegionTimeline(board.breakpoints) ? DOCUMENT_VERSION : 1,
+    version: documentVersion(board),
     yjsUpdate: bytesToBase64(Y.encodeStateAsUpdate(liveDoc)),
     ...(hostIdentity ? { collaboration: getHostIdentity() } : {}),
   };
@@ -286,7 +292,7 @@ export function serializeBoardCopy(board: Board): string {
   try {
     doc.getMap<string>(DOCUMENT_MAP).set(BOARD_KEY, JSON.stringify(snapshot));
     const envelope: BoardFileEnvelope = {
-      format: DOCUMENT_FORMAT, version: isRegionTimeline(snapshot.breakpoints) ? DOCUMENT_VERSION : 1,
+      format: DOCUMENT_FORMAT, version: documentVersion(snapshot),
       yjsUpdate: bytesToBase64(Y.encodeStateAsUpdate(doc)),
     };
     return JSON.stringify(envelope);
@@ -310,7 +316,7 @@ export function deserializeBoard(contents: string): Board {
   if (file.format !== DOCUMENT_FORMAT) {
     throw new Error("This file is not a Whiteboard document.");
   }
-  if (file.version !== 1 && file.version !== DOCUMENT_VERSION) {
+  if (file.version !== 1 && file.version !== 2 && file.version !== DOCUMENT_VERSION) {
     throw new Error(`Unsupported Whiteboard document version: ${String(file.version)}.`);
   }
   if (typeof file.yjsUpdate !== "string") {
@@ -323,6 +329,9 @@ export function deserializeBoard(contents: string): Board {
     Y.applyUpdate(nextDoc, base64ToBytes(file.yjsUpdate));
     const nextMap = nextDoc.getMap<string>(DOCUMENT_MAP);
     const board = readBoardFromMap(nextMap);
+    if (board.autoOpacity && file.version !== DOCUMENT_VERSION) {
+      throw new Error("Automatic opacity requires Whiteboard document version 3.");
+    }
 
     replaceDocument(nextDoc, identity);
     return board;

@@ -56,12 +56,24 @@ describe("region document persistence", () => {
     expect(deserializeBoard(serializeBoardCopy(regionBoard))).toEqual(regionBoard);
   });
 
+  it("persists automatic opacity mode and rejects malformed values", () => {
+    const automatic = { ...regionBoard, autoOpacity: true };
+    const saved = serializeBoard(automatic);
+    const copy = serializeBoardCopy(automatic);
+    expect(JSON.parse(saved).version).toBe(3);
+    expect(JSON.parse(copy).version).toBe(3);
+    expect(deserializeBoard(saved)).toEqual(automatic);
+    expect(deserializeBoard(copy)).toEqual(automatic);
+    expect(() => deserializeBoard(fileWithSnapshot(automatic))).toThrow(/version 3/);
+    expect(() => deserializeBoard(fileWithSnapshot({ ...automatic, autoOpacity: "yes" }))).toThrow();
+  });
+
   it("versions region files so old apps reject them instead of applying old semantics", () => {
     expect(JSON.parse(serializeBoard(regionBoard)).version).toBe(2);
     expect(JSON.parse(serializeBoardCopy(regionBoard)).version).toBe(2);
     expect(JSON.parse(serializeBoard(board)).version).toBe(1);
     expect(deserializeBoard(fileWithSnapshot(board))).toEqual(board);
-    const unsupported = { ...JSON.parse(serializeBoard(regionBoard)), version: 3 };
+    const unsupported = { ...JSON.parse(serializeBoard(regionBoard)), version: 4 };
     const before = captureDocument();
     expect(() => deserializeBoard(JSON.stringify(unsupported))).toThrow("Unsupported Whiteboard document version");
     expect(captureDocument()).toEqual(before);

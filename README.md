@@ -18,6 +18,7 @@ zoom axis*. Explore a data hierarchy by zooming through levels of abstraction
 🚧 Working prototype. Implemented:
 
 - Zoom regions with cut-to-split editing, adjustable dividers, and automatic tweens
+- Optional **Auto fade** mode based on each element's apparent on-screen size
 - Direct region-specific object properties with gold customization indicators
 - Shapes, text, sticky notes, frames, connectors, groups, embedded images
 - Layers, props, zoom timeline, undo/redo, align, open/save `.board` files
@@ -82,6 +83,10 @@ the reusable invite identity is stored in that board file.
 - Drag a region divider to change where the appearance switches. A tween is
   added automatically at each cut; drag its left and right edges to shorten
   the blend for a faster change or widen it for a slower change.
+- Toggle **Auto fade** beside the zoom readout to smoothly hide ordinary
+  elements when they become too small or too large on screen. It is layered
+  after region animation, so breakpoints can still change content, color,
+  position, and other properties; authored opacity remains the maximum.
 - The properties panel follows the current region—there are no breakpoint
   tabs or variant controls. Gold dots mark properties customized from the
   object's original values; click a dot to reset that property. Creating an
@@ -98,8 +103,9 @@ the reusable invite identity is stored in that board file.
 
 Existing local `.board` files are upgraded when opened: their zoom-level
 appearances and assigned variants become region properties. Save to retain
-the upgraded timeline in the version-2 file format; older builds will reject
-these files rather than display incorrect appearances. Use the same app version for collaboration with
+the upgraded timeline in the version-2 file format; boards using Auto fade are
+saved as version 3 so older builds reject them rather than display incorrect
+appearances. Use the same app version for collaboration with
 region-based boards; older versions do not understand the new region metadata.
 
 Canvas feedback also previews the full selected set while dragging, and shape

@@ -277,6 +277,11 @@ export interface Board {
   /** Sorted ascending by zoom value. */
   breakpoints: Breakpoint[];
   elements: BoardElement[];
+  /**
+   * Fade ordinary elements by their apparent on-screen size. Authored opacity
+   * remains the maximum opacity and breakpoint animation still resolves first.
+   */
+  autoOpacity?: boolean;
 }
 
 // ─── Core algorithm: threshold-based resolution ────────────────────────────────
@@ -461,7 +466,7 @@ export function transitionHalfWidth(bp: Breakpoint): number {
  * Below Base:  breakpoints apply at or below their zoom marker.
  * Above Base:  breakpoints apply at or above their zoom marker.
  */
-export function resolveState(
+function resolveStateAtZoom(
   element: BoardElement,
   zoom: number,
   breakpoints: Breakpoint[],
@@ -512,6 +517,59 @@ export function resolveState(
   }
 
   return resolveStateDirect(element, zoom, breakpoints);
+}
+
+/** Apparent-size range used by automatic opacity, measured in screen pixels. */
+export const AUTO_OPACITY_SIZE = {
+  hiddenSmall: 6,
+  visibleSmall: 24,
+  visibleLarge: 900,
+  hiddenLarge: 1600,
+} as const;
+
+/**
+ * Smoothly fades an element near the useful limits of its apparent size.
+ * Containers are excluded because their Konva opacity is inherited by children;
+ * fading a frame/group would incorrectly hide detail that should be appearing.
+ */
+export function automaticOpacityFactor(
+  element: BoardElement,
+  state: ElementState,
+  zoom: number,
+): number {
+  if (element.type === "frame" || element.type === "group") return 1;
+  const apparentSize = Math.max(Math.abs(state.width), Math.abs(state.height)) * zoom;
+  if (!Number.isFinite(apparentSize) || apparentSize <= 0) return 0;
+  const logSize = Math.log2(apparentSize);
+  const small = smoothstep(
+    (logSize - Math.log2(AUTO_OPACITY_SIZE.hiddenSmall))
+      / Math.log2(AUTO_OPACITY_SIZE.visibleSmall / AUTO_OPACITY_SIZE.hiddenSmall),
+  );
+  const large = 1 - smoothstep(
+    (logSize - Math.log2(AUTO_OPACITY_SIZE.visibleLarge))
+      / Math.log2(AUTO_OPACITY_SIZE.hiddenLarge / AUTO_OPACITY_SIZE.visibleLarge),
+  );
+  return Math.max(0, Math.min(small, large));
+}
+
+/**
+ * Resolve authored breakpoint animation, then optionally apply screen-size
+ * opacity. This keeps Auto orthogonal to text, color, transform, and variants.
+ */
+export function resolveState(
+  element: BoardElement,
+  zoom: number,
+  breakpoints: Breakpoint[],
+  autoOpacity = false,
+): ElementState {
+  const state = resolveStateAtZoom(element, zoom, breakpoints);
+  if (!autoOpacity) return state;
+  const opacity = state.opacity * automaticOpacityFactor(element, state, zoom);
+  return {
+    ...state,
+    opacity,
+    visible: state.visible && opacity > 0,
+  };
 }
 
 /**

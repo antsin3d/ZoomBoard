@@ -242,6 +242,7 @@ export interface BoardStore {
   // ── Actions: viewport ──
   setZoom: (zoom: number) => void;
   setPan: (x: number, y: number) => void;
+  setAutoOpacity: (enabled: boolean) => void;
 
   // ── Actions: tool ──
   setTool: (tool: ToolMode) => void;
@@ -354,6 +355,7 @@ function seedBoard(): Board {
   return {
     breakpoints: createRegionTimeline(),
     elements: [],
+    autoOpacity: false,
   };
 }
 
@@ -552,6 +554,12 @@ export const useBoardStore = create<BoardStore>()(
       },
 
       setPan: (x, y) => set({ panX: x, panY: y }),
+
+      setAutoOpacity: (enabled) => {
+        if (get().board.autoOpacity === enabled) return;
+        saveHistory();
+        set((s) => ({ board: { ...s.board, autoOpacity: enabled } }));
+      },
 
       // ── Tool ──────────────────────────────────────────────────────────────
 
@@ -1231,7 +1239,7 @@ export const useBoardStore = create<BoardStore>()(
             ...s.board,
             elements: s.board.elements.map((el) => {
               if (!effectiveIds.includes(el.id)) return el;
-              const resolved = resolveState(el, zoom, board.breakpoints);
+              const resolved = resolveState(el, zoom, board.breakpoints, board.autoOpacity);
               const existing = el.keyframes[kfId] ?? {};
               return {
                 ...el,
@@ -1635,7 +1643,7 @@ export const useBoardStore = create<BoardStore>()(
         const { board, zoom, activeBreakpointId } = get();
         const el = board.elements.find((e) => e.id === elementId);
         if (!el) return;
-        const current = resolveState(el, zoom, board.breakpoints);
+        const current = resolveState(el, zoom, board.breakpoints, board.autoOpacity);
         const nextVisible = !current.visible;
         const kfId = activeBreakpointId ?? BASE_KEYFRAME_ID;
         set((s) => ({
@@ -1833,7 +1841,7 @@ export const useBoardStore = create<BoardStore>()(
         const { board, zoom } = get();
         const el = board.elements.find((e) => e.id === elementId);
         if (!el) return null;
-        return resolveState(el, zoom, board.breakpoints);
+        return resolveState(el, zoom, board.breakpoints, board.autoOpacity);
       },
     };
   }),

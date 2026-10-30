@@ -163,7 +163,7 @@ export function withLiveState<T extends { x: number; y: number }>(state: T, id: 
 }
 
 export function worldPositionAtZoom(board: Board, element: BoardElement, zoom: number): Point {
-  const state = resolveState(element, zoom, board.breakpoints);
+  const state = resolveState(element, zoom, board.breakpoints, board.autoOpacity);
   // Ephemeral drag override (no history): while an element is dragged on the
   // canvas its dependents — attached connectors — track it live.
   const live = livePositions.get(element.id);
@@ -177,7 +177,7 @@ export function worldPositionAtZoom(board: Board, element: BoardElement, zoom: n
 }
 
 export function worldBoundsAtZoom(board: Board, element: BoardElement, zoom: number): Bounds {
-  const state = resolveState(element, zoom, board.breakpoints);
+  const state = resolveState(element, zoom, board.breakpoints, board.autoOpacity);
   const world = worldPositionAtZoom(board, element, zoom);
   if (element.type !== "group") {
     return { x: world.x, y: world.y, width: state.width, height: state.height };
@@ -815,7 +815,7 @@ export function collectConnectorObstacles(
     ) {
       continue;
     }
-    const state = resolveState(element, zoom, board.breakpoints);
+    const state = resolveState(element, zoom, board.breakpoints, board.autoOpacity);
     if (!state.visible || state.opacity <= 0) continue;
     const bounds = worldBoundsAtZoom(board, element, zoom);
     if (bounds.width < 1 && bounds.height < 1) continue;
@@ -927,7 +927,7 @@ export function connectorWorldEndpoints(
   zoom: number,
 ): ConnectorWorldEndpoints | null {
   if (connector.type !== "connector") return null;
-  const state = resolveState(connector, zoom, board.breakpoints);
+  const state = resolveState(connector, zoom, board.breakpoints, board.autoOpacity);
   const parent = connector.parentId
     ? board.elements.find((element) => element.id === connector.parentId)
     : undefined;
@@ -1014,7 +1014,7 @@ export function routeConnectorWorld(
 ): (ConnectorWorldEndpoints & RoutedConnector) | null {
   const endpoints = connectorWorldEndpoints(board, connector, zoom);
   if (!endpoints) return null;
-  const state = resolveState(connector, zoom, board.breakpoints);
+  const state = resolveState(connector, zoom, board.breakpoints, board.autoOpacity);
   const exclude = [connector.id];
   if (connector.connectorStartId) exclude.push(connector.connectorStartId);
   if (connector.connectorEndId) exclude.push(connector.connectorEndId);
@@ -1035,7 +1035,7 @@ export function resolveConnectorState(
   connector: BoardElement,
   zoom: number,
 ): ElementState {
-  const state = resolveState(connector, zoom, board.breakpoints);
+  const state = resolveState(connector, zoom, board.breakpoints, board.autoOpacity);
   if (connector.type !== "connector") return state;
 
   const routed = routeConnectorWorld(board, connector, zoom);
@@ -1084,7 +1084,7 @@ export function findAttachTargetAt(
     const element = board.elements[i];
     if (element.type === "connector") continue;
     if (excluded.has(element.id)) continue;
-    const state = resolveState(element, zoom, board.breakpoints);
+    const state = resolveState(element, zoom, board.breakpoints, board.autoOpacity);
     if (!state.visible || state.opacity <= 0) continue;
     const bounds = worldBoundsAtZoom(board, element, zoom);
     // Broad-phase AABB, then narrow-phase against the real silhouette.
@@ -1256,7 +1256,7 @@ export function canvasDropTargetAt(
     if (!isCanvasDropTarget(element)) continue;
     if (excluded.has(element.id)) continue;
     if ([...excluded].some((id) => isDescendantOf(board, id, element.id))) continue;
-    const state = resolveState(element, zoom, board.breakpoints);
+    const state = resolveState(element, zoom, board.breakpoints, board.autoOpacity);
     if (!state.visible || state.opacity <= 0) continue;
     const bounds = worldBoundsAtZoom(board, element, zoom);
     if (!boundsContains(bounds, point)) continue;

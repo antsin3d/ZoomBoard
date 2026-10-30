@@ -89,6 +89,8 @@ function moveHandle(id: string, kind: Handle, value: number, recordHistory: bool
 
 export default function ZoomTimeline() {
   const breakpoints = useBoardStore((state) => state.board.breakpoints);
+  const autoOpacity = useBoardStore((state) => Boolean(state.board.autoOpacity));
+  const setAutoOpacity = useBoardStore((state) => state.setAutoOpacity);
   const zoom = useBoardStore((state) => state.zoom);
   const activeId = useBoardStore((state) => state.activeBreakpointId);
   const editable = useSessionStore((state) =>
@@ -268,6 +270,16 @@ export default function ZoomTimeline() {
       <div className="zr-toolbar">
         <span className="zr-heading">Zoom regions</span>
         <output className="zr-zoom" aria-label="Canvas zoom">{formatZoom(zoom)}</output>
+        <button
+          className="zr-button zr-auto"
+          type="button"
+          aria-pressed={autoOpacity}
+          disabled={!editable}
+          onClick={() => setAutoOpacity(!autoOpacity)}
+          title="Automatically fade ordinary elements when their apparent size becomes too small or too large; authored opacity remains the maximum"
+        >
+          Auto fade
+        </button>
         <button className="zr-button zr-primary" disabled={!canCut} onClick={() => cut(zoom)} title={canCut ? "Split the current region at the playhead; both sides start with the same appearance" : "Move the playhead farther from a divider or narrow its tween to split here"}>+ New Region</button>
         {regions && selected && (
           <input

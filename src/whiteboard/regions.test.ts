@@ -36,6 +36,20 @@ describe("region resolution", () => {
     expect(isRegionTimeline([timeline[0], legacy("old", 2)])).toBe(false);
   });
 
+  it("optionally multiplies authored opacity by a smooth apparent-size fade", () => {
+    const timeline = createRegionTimeline();
+    const shape = element({ base: { ...DEFAULT_STATE, width: 120, height: 80, opacity: 0.8 } });
+    expect(resolveState(shape, 0.05, timeline).opacity).toBe(0.8);
+    expect(resolveState(shape, 0.05, timeline, true)).toMatchObject({ opacity: 0, visible: false });
+    expect(resolveState(shape, 0.2, timeline, true).opacity).toBeCloseTo(0.8);
+    expect(resolveState(shape, 1, timeline, true).opacity).toBeCloseTo(0.8);
+
+    const large = element({ base: { ...DEFAULT_STATE, width: 200, height: 80, opacity: 0.8 } });
+    expect(resolveState(large, 8, timeline, true)).toMatchObject({ opacity: 0, visible: false });
+    const frame = element({ type: "frame", base: { ...DEFAULT_STATE, width: 2000, height: 1200 } });
+    expect(resolveState(frame, 8, timeline, true).opacity).toBe(1);
+  });
+
   it("uses exact start dividers including 1x, without inheriting adjacent edits", () => {
     const timeline = [region("a", 0.05), region("b", 1, { transition: "snap" }), region("c", 2)];
     const el = element({ keyframes: { a: { x: 80, fill: "#ffffff" }, b: { y: 25 } } });

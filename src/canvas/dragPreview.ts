@@ -24,13 +24,13 @@ export function createDragPreview(board: Board, selectedIds: string[], id: strin
   // Routed connector hulls can start somewhere other than their authored frame.
   const origin = element.type === "connector"
     ? resolveConnectorState(board, element, zoom)
-    : resolveState(element, zoom, board.breakpoints);
+    : resolveState(element, zoom, board.breakpoints, board.autoOpacity);
   return {
     ...selection,
     id,
     origin: { x: origin.x, y: origin.y },
     positions: new Map(selection.roots.map((root) => {
-      const state = resolveState(root, zoom, board.breakpoints);
+      const state = resolveState(root, zoom, board.breakpoints, board.autoOpacity);
       return [root.id, { x: state.x, y: state.y }] as const;
     })),
   };
@@ -53,7 +53,7 @@ export function dragPreviewPositions(drag: DragPreview, point: Point): Map<strin
  * live-position map, so descendants never receive the delta a second time.
  */
 export function resolveLiveConnectorState(board: Board, element: BoardElement, zoom: number): ElementState {
-  const state = resolveState(element, zoom, board.breakpoints);
+  const state = resolveState(element, zoom, board.breakpoints, board.autoOpacity);
   const live = withLiveState(state, element.id);
   if (live === state) return resolveConnectorState(board, element, zoom);
   return resolveConnectorState(board, {
