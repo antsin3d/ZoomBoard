@@ -83,6 +83,19 @@ function TextAreaField({
   onAutoFocused?: () => void;
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const focusedRef = useRef(false);
+  const latestDraftRef = useRef(value);
+  const [draft, setDraft] = useState(value);
+
+  // Board updates may be acknowledged or projected asynchronously. While this
+  // field is focused, keep the DOM input authoritative so an older projection
+  // cannot erase a character the user has already typed.
+  useEffect(() => {
+    if (focusedRef.current) return;
+    latestDraftRef.current = value;
+    setDraft(value);
+  }, [value]);
+
   useEffect(() => {
     if (!autoFocus || !inputRef.current) return;
     inputRef.current.focus();
@@ -96,8 +109,22 @@ function TextAreaField({
       <textarea
         ref={inputRef}
         className="prop-input prop-textarea"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
+        value={draft}
+        onFocus={() => {
+          focusedRef.current = true;
+        }}
+        onChange={(e) => {
+          const next = e.currentTarget.value;
+          latestDraftRef.current = next;
+          setDraft(next);
+          onChange(next);
+        }}
+        onBlur={() => {
+          focusedRef.current = false;
+          // Re-apply the local draft if a delayed external projection arrived
+          // between the final input event and blur.
+          if (latestDraftRef.current !== value) onChange(latestDraftRef.current);
+        }}
       />
     </label>
   );
@@ -556,6 +583,7 @@ function StateEditor({
       <div className="prop-row">
         <OverrideDot k="content" />
         <TextAreaField
+          key={`${el.id}:${presentationKey}`}
           label="Content"
           value={state.content}
           onChange={(v) => change({ content: v })}
